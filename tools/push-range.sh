@@ -8,18 +8,28 @@
 # decreasing order of fidelity:
 #
 #   1. refspec mode — the `git push ...` command line found among the /proc
-#      ancestors is parsed for refspecs; each refspec yields the exact range
-#      (remote-tracking ref or merge-base with <remote>/main .. pushed sha).
-#      Covers first pushes, cross-branch pushes, force pushes and multi-ref
-#      pushes.
-#   2. current-branch mode — no `git push` ancestor (manual `lefthook run
-#      pre-push` runs) or a bare `git push`: validate what a push of the
-#      current branch would carry, based on @{push}, the remote-tracking ref,
-#      and/or the merge-base with <remote>/main, folded to the deepest common
-#      ancestor (a conservative superset).
-#   3. wide mode — `--all/--mirror/--tags/--follow-tags`, an unparseable push
-#      command line, or push.default=matching: every local non-merge commit
-#      not known to be on the remote is validated one by one.
+#      ancestors (including `git -c ... push`, `git -C path push`, global
+#      options and command-line `-c` config) is parsed for refspecs; each
+#      refspec yields the exact range (remote-tracking ref or merge-base with
+#      <remote>/main .. pushed sha). Covers first pushes, cross-branch pushes,
+#      force pushes, multi-ref pushes and wildcards.
+#   2. configured-refspec mode — a bare `git push`/`git push <remote>` with
+#      remote.<name>.push configured uses exactly those refspecs, overridden
+#      or extended by command-line `-c remote.<name>.push=...`.
+#   3. current-branch mode — no `git push` ancestor (manual `lefthook run
+#      pre-push` runs) or a bare push under push.default=simple/current/
+#      upstream: validate what a push of the current branch would carry,
+#      based on @{push}, the remote-tracking ref, and/or the merge-base with
+#      <remote>/main, folded to the deepest common ancestor (a conservative
+#      superset).
+#   4. wide mode — `--all/--mirror/--tags/--follow-tags` or
+#      push.default=matching: every local non-merge commit not known to be on
+#      the remote is validated one by one.
+#
+# A push command line this script cannot parse is a hard failure. Falling
+# back to the current branch in that situation is exactly the fail-open bug
+# the parser is here to prevent (the clean current branch would go green
+# while a different ref is published).
 #
 # A push with no determinable baseline FAILS. An empty range is reported as
 # NO_NEW_COMMITS. Nothing here writes, stages, amends or touches the network.
@@ -34,6 +44,8 @@
 #     print       print resolved ranges as "<base> <head>" lines
 #   DUDUDU_PUSH_REMOTE supplies a default remote (origin when unset); on a
 #   real push the remote parsed from the `git push` command line wins.
+#   DUDUDU_FORCE_BUILD_GATE=1 makes `relevant` report 0 unconditionally, so
+#   the manual full gate can force build+CTest on a docs-only range.
 
 set -u -o pipefail
 export LC_ALL=C.UTF-8
@@ -89,23 +101,110 @@ verify_commit() { git rev-parse --verify --quiet "$1^{commit}" >/dev/null 2>&1; 
 EMPTY_TREE="$(git hash-object -t tree /dev/null)"
 
 # --- push command-line recovery ----------------------------------------------
+# Command-line `-c key=value` / `--config-env` entries seen before `push`.
+# A separate `git config` process cannot see the ancestor's -c overrides, so
+# they are replayed by cfg_get/cfg_get_all below.
+PUSH_ARGS=()
+PUSH_GLOBAL_CONFIG=()
+CANDIDATE_CONFIG=()
+PUSH_UNPARSEABLE=0
+
+record_global_config() {
+  local kind="$1" raw="$2" name envvar value=""
+  if [ "$kind" = "-c" ]; then
+    [ -n "$raw" ] && CANDIDATE_CONFIG+=("$raw")
+    return
+  fi
+  # --config-env=<name>=<envvar>: resolve the environment value now.
+  case "$raw" in
+    *=*) name="${raw%%=*}"; envvar="${raw#*=}" ;;
+    *) PUSH_UNPARSEABLE=1; return ;;
+  esac
+  if [ -n "${!envvar+x}" ]; then
+    value="${!envvar}"
+  fi
+  CANDIDATE_CONFIG+=("$name=$value")
+}
+
+# parse_git_push_argv <argv...>: recognize `git [global options] push ...`.
+# The global option grammar is parsed rather than assuming `argv[1]` is the
+# subcommand, so `git -c k=v push`, `git -C path push` and friends still yield
+# the real push arguments. Returns 1 without setting PUSH_ARGS when this is
+# not a push; sets PUSH_UNPARSEABLE=1 when it looks like a push but a global
+# option is unknown (the caller must then fail, never fall back).
+parse_git_push_argv() {
+  local -a argv=("$@")
+  local n=${#argv[@]} i=1 arg a
+  CANDIDATE_CONFIG=()
+  while [ "$i" -lt "$n" ]; do
+    arg="${argv[$i]}"
+    case "$arg" in
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env|--attr-source)
+        if [ "$arg" = "-c" ] || [ "$arg" = "--config-env" ]; then
+          [ $((i + 1)) -lt "$n" ] && record_global_config "$arg" "${argv[$((i + 1))]}"
+        fi
+        i=$((i + 2)); continue ;;
+      -c?*)
+        record_global_config -c "${arg#-c}"
+        i=$((i + 1)); continue ;;
+      -C?*)
+        i=$((i + 1)); continue ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--attr-source=*)
+        i=$((i + 1)); continue ;;
+      --config-env=*)
+        record_global_config --config-env "${arg#--config-env=}"
+        i=$((i + 1)); continue ;;
+      --bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-lazy-fetch|--no-advice|--paginate|-p|--no-pager|-P|--version|-v|--help|-h|--html-path|--man-path|--info-path)
+        i=$((i + 1)); continue ;;
+      --)
+        i=$((i + 1)); break ;;
+      -*)
+        # Unknown global option. If a later word is the push subcommand, the
+        # command IS a push and must not silently fall back to the current
+        # branch; otherwise this is some other git command.
+        for a in "${argv[@]:i + 1}"; do
+          if [ "$a" = "push" ]; then
+            PUSH_UNPARSEABLE=1
+            break
+          fi
+        done
+        return 1 ;;
+      *)
+        if [ "$arg" = "push" ]; then
+          PUSH_ARGS=("${argv[@]:i + 1}")
+          PUSH_GLOBAL_CONFIG=("${CANDIDATE_CONFIG[@]}")
+          return 0
+        fi
+        return 1 ;;
+    esac
+  done
+  if [ "$i" -lt "$n" ] && [ "${argv[$i]}" = "push" ]; then
+    PUSH_ARGS=("${argv[@]:i + 1}")
+    PUSH_GLOBAL_CONFIG=("${CANDIDATE_CONFIG[@]}")
+    return 0
+  fi
+  return 1
+}
+
 # Walk the /proc ancestor chain looking for the `git push ...` invocation this
 # hook (however deeply lefthook nests it) belongs to. Returns 0 and sets
 # PUSH_ARGS (array of args after "push") when found.
 find_push_args() {
   PUSH_ARGS=()
-  local pid self="$BASHPID" argv0 i depth=0
+  PUSH_GLOBAL_CONFIG=()
+  PUSH_UNPARSEABLE=0
+  local pid self="$BASHPID" argv0 depth=0
   pid="$self"
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$depth" -lt 10 ]; do
     local -a argv=()
     mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || { argv=(); }
-    if [ "${#argv[@]}" -ge 2 ]; then
+    if [ "${#argv[@]}" -ge 1 ]; then
       argv0="${argv[0]##*/}"
-      if [ "$argv0" = "git" ] && [ "${argv[1]}" = "push" ]; then
-        for ((i = 2; i < ${#argv[@]}; i++)); do
-          PUSH_ARGS+=("${argv[$i]}")
-        done
-        return 0
+      if [ "$argv0" = "git" ]; then
+        if parse_git_push_argv "${argv[@]}"; then
+          return 0
+        fi
+        [ "$PUSH_UNPARSEABLE" -eq 1 ] && return 1
       fi
     fi
     pid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
@@ -118,40 +217,64 @@ find_push_args() {
 #   SPECS[]          refspecs (positional args minus the remote)
 #   WIDE=1           --all/--mirror/--tags/--follow-tags present
 #   DELETE_ONLY=1    -d/--delete present (deletion publish, no commits)
+#   REMOTE_EXPLICIT=1 a remote/--repo was named on the command line
 #   SPECS_RELIABLE=1 args were fully understood
 parse_push_args() {
   SPECS=()
   WIDE=0
   DELETE_ONLY=0
   SPECS_RELIABLE=1
+  REMOTE_EXPLICIT=0
   local -a novalue=(
     -q --quiet -v --verbose -f --force -n --dry-run --all --branches --mirror
-    --tags --follow-tags --atomic --porcelain -u --set-upstream -t --thin
-    -d --delete --no-verify --verify --force-with-lease --force-if-includes
-    --no-force-if-includes --no-signed --signed --prune --no-prune
-    --no-thin --progress --no-progress --no-recurse-submodules -4 --ipv4
-    -6 --ipv6
+    --tags --follow-tags --atomic --no-atomic --porcelain -u --set-upstream
+    -t --thin --no-thin -d --delete --no-verify --verify --force-with-lease
+    --force-if-includes --no-force-if-includes --signed --no-signed
+    --prune --no-prune --progress --no-progress --no-recurse-submodules
+    --recurse-submodules -4 --ipv4 -6 --ipv6
   )
-  local -a withvalue=( -o --push-option --receive-pack --exec --repo --recurse-submodules --server-option )
-  local arg seen_remote=0 i j known
+  local -a withvalue=( -o --push-option --receive-pack --exec --repo --server-option )
+  local arg seen_remote=0 end_options=0 i j known tagprefix
   for ((i = 0; i < ${#PUSH_ARGS[@]}; i++)); do
     arg="${PUSH_ARGS[$i]}"
-    if [[ $arg == -* ]]; then
+    if [ "$end_options" -eq 0 ] && [ "$arg" = "--" ]; then
+      end_options=1
+      continue
+    fi
+    if [ "$end_options" -eq 0 ] && [[ $arg == -* ]]; then
+      case "$arg" in
+        --repo=*)
+          REMOTE="${arg#--repo=}"
+          REMOTE_EXPLICIT=1
+          seen_remote=1
+          continue ;;
+      esac
       known=0
       for j in "${novalue[@]}"; do [ "$arg" = "$j" ] && { known=1; break; }; done
       if [ "$known" -eq 0 ]; then
         for j in "${withvalue[@]}"; do [ "$arg" = "$j" ] && { known=2; break; }; done
       fi
       # combined short flags (e.g. -qu, -fu): fine when every letter is a
-      # known value-less option
+      # known value-less option; -oVALUE carries its value inline.
       if [ "$known" -eq 0 ] && [[ $arg =~ ^-[qvfntud]+$ ]]; then
         known=1
+        [[ $arg == *d* ]] && DELETE_ONLY=1
+      fi
+      if [ "$known" -eq 0 ] && [[ $arg == -o?* ]]; then
+        known=3
       fi
       case "$arg" in
-        --all|--branches|--mirror|--tags|--follow-tags) WIDE=1 ;;
+        --all|--branches|--branches=*|--mirror|--tags|--follow-tags) WIDE=1 ;;
         -d|--delete) DELETE_ONLY=1 ;;
       esac
-      if [ "$known" -eq 1 ]; then
+      if [ "$arg" = "--repo" ]; then
+        if [ $((i + 1)) -lt "${#PUSH_ARGS[@]}" ]; then
+          REMOTE="${PUSH_ARGS[$((i + 1))]}"
+          REMOTE_EXPLICIT=1
+          seen_remote=1
+        fi
+      fi
+      if [ "$known" -eq 1 ] || [ "$known" -eq 3 ]; then
         :
       elif [ "$known" -eq 2 ]; then
         i=$((i + 1))                  # consume the flag's value
@@ -159,15 +282,111 @@ parse_push_args() {
         :                             # unknown flag with embedded value: keep going
       else
         SPECS_RELIABLE=0              # unknown bare flag: do not trust the rest
-        WIDE=1
       fi
     elif [ "$seen_remote" -eq 0 ]; then
       REMOTE="$arg"                   # first positional is the remote
+      REMOTE_EXPLICIT=1
       seen_remote=1
     else
       SPECS+=("$arg")
     fi
   done
+
+  # `git push origin tag v1` is shorthand for refs/tags/v1.
+  case "${SPECS[0]:-}" in
+    tag|+tag)
+      tagprefix=""
+      [ "${SPECS[0]:-}" = "+tag" ] && tagprefix="+"
+      if [ "${#SPECS[@]}" -ge 2 ]; then
+        SPECS=("${tagprefix}refs/tags/${SPECS[1]}" "${SPECS[@]:2}")
+      else
+        SPECS_RELIABLE=0            # bare `tag` with no tag name
+      fi ;;
+  esac
+}
+
+# --- git config with command-line -c overrides -------------------------------
+# cfg_get <key>: last command-line -c value wins, otherwise the repo value.
+cfg_get() {
+  local key="$1" entry value="" found=0
+  for entry in "${PUSH_GLOBAL_CONFIG[@]}"; do
+    [ "${entry%%=*}" = "$key" ] || continue
+    value="${entry#*=}"
+    found=1
+  done
+  if [ "$found" -eq 1 ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  value="$(git config --get "$key" 2>/dev/null)" || return 1
+  printf '%s' "$value"
+}
+
+# cfg_get_all <key>: repo values plus command-line -c values (Git appends -c
+# entries to multi-valued keys; it does not replace remote.<name>.push).
+# A real push also exports -c config through GIT_CONFIG_PARAMETERS, so the
+# same value can arrive twice; deduplicate it.
+cfg_get_all() {
+  local key="$1" entry line
+  local -A seen=()
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ -n "${seen[$line]+x}" ] && continue
+    seen[$line]=1
+    printf '%s\n' "$line"
+  done < <(
+    git config --get-all "$key" 2>/dev/null || true
+    for entry in "${PUSH_GLOBAL_CONFIG[@]}"; do
+      [ "${entry%%=*}" = "$key" ] && printf '%s\n' "${entry#*=}"
+    done
+  )
+}
+
+remote_is_configured() {
+  local name="$1"
+  cfg_get "remote.$name.url" >/dev/null 2>&1 && return 0
+  cfg_get "remote.$name.pushurl" >/dev/null 2>&1 && return 0
+  cfg_get "remote.$name.push" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# Git's default-remote order for a push that names no remote.
+resolve_default_remote() {
+  local branch c
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
+    if c="$(cfg_get "branch.$branch.pushRemote")" && [ -n "$c" ]; then
+      REMOTE="$c"
+      return 0
+    fi
+  fi
+  if c="$(cfg_get remote.pushDefault)" && [ -n "$c" ]; then
+    REMOTE="$c"
+    return 0
+  fi
+  if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
+    if c="$(cfg_get "branch.$branch.remote")" && [ -n "$c" ]; then
+      REMOTE="$c"
+      return 0
+    fi
+  fi
+  # Git's final fallback for a remote-less push is origin. Do not let
+  # DUDUDU_PUSH_REMOTE silently redirect a real push whose default differs.
+  REMOTE=origin
+  return 0
+}
+
+# load_config_specs: fill CONFIG_SPECS from remote.<name>.push, including
+# command-line -c entries. Only configured remotes have push recipes; a URL
+# or path argument falls through to push.default.
+CONFIG_SPECS=()
+load_config_specs() {
+  local line
+  CONFIG_SPECS=()
+  remote_is_configured "$REMOTE" || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] && CONFIG_SPECS+=("$line")
+  done < <(cfg_get_all "remote.$REMOTE.push")
 }
 
 # --- range construction ------------------------------------------------------
@@ -221,6 +440,83 @@ refspec_range() {
   base="$(baseline_base "$sha")" ||
     die "cannot determine the push base for '$rs': no remote-tracking ref '$tracking' and no $REMOTE/main (or $REMOTE/master) baseline. Fetch the remote (git fetch $REMOTE) or push once with an explicit range check."
   printf '%s %s' "$base" "$sha"
+}
+
+# Negative push refspecs (^pattern) exclude refs from a wildcard push.
+NEGATIVE_PATTERNS=()
+is_negative_ref() {
+  local ref="$1" pat prefix suffix
+  for pat in "${NEGATIVE_PATTERNS[@]}"; do
+    case "$pat" in
+      *'*'*)
+        prefix="${pat%%\**}"
+        suffix="${pat#*\*}"
+        # RefSpec wildcards are a single literal '*'; '?' and '[]' are
+        # ordinary characters. Treating them as globs could exclude a ref
+        # Git actually pushes (under-validation). More than one '*' cannot
+        # be reproduced, so do not exclude it either.
+        [[ $suffix == *'*'* ]] && continue
+        [[ $ref == "$prefix"*"$suffix" ]] && return 0
+        ;;
+      *)
+        [ "$ref" = "$pat" ] && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# append_refspec_ranges <refspec>: append the range(s) this refspec publishes
+# to RANGES. Wildcard sources are expanded with for-each-ref and filtered by
+# negative refspecs. An unexpandable wildcard or an empty destination is a
+# hard failure, never a silent skip.
+append_refspec_ranges() {
+  local rs="$1" src dst ref prefix suffix mid expdst refs matched=0
+  rs="${rs#+}"
+  if [[ $rs == *:* ]]; then
+    src="${rs%%:*}"
+    dst="${rs#*:}"
+  else
+    src="$rs"
+    dst="$rs"
+  fi
+  if [ -z "$src" ]; then
+    note "refspec '$1': deletion publish, no commits to validate"
+    return 0
+  fi
+  if [ -z "$dst" ]; then
+    die "refspec '$1' has an empty destination; cannot determine the pushed refs"
+  fi
+  if [[ $src == *'*'* ]]; then
+    if [[ $dst != *'*'* ]]; then
+      die "refspec '$1': wildcard source without a wildcard destination"
+    fi
+    prefix="${src%%\**}"
+    suffix="${src#*\*}"
+    if ! refs="$(git for-each-ref --format='%(refname)' "$src")"; then
+      die "cannot expand wildcard refspec '$1'"
+    fi
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      is_negative_ref "$ref" && continue
+      mid="${ref#"$prefix"}"
+      if [ -n "$suffix" ]; then
+        mid="${mid%"$suffix"}"
+      fi
+      expdst="${dst/\*/$mid}"
+      RANGES+=("$(refspec_range "$ref:$expdst")")
+      matched=1
+    done <<< "$refs"
+    if [ "$matched" -eq 0 ]; then
+      note "refspec '$1': no local refs matched"
+    fi
+    return 0
+  fi
+  if is_negative_ref "$src"; then
+    note "refspec '$1': excluded by a negative refspec"
+    return 0
+  fi
+  RANGES+=("$(refspec_range "$src:$dst")")
 }
 
 # current_branch_range: prints "<base> <head>" for the current branch, using
@@ -290,6 +586,7 @@ resolve_wide() {
 resolve_ranges() {
   RANGES=()
   ROOTS=()
+  NEGATIVE_PATTERNS=()
   if [ -n "$RANGE_OVERRIDE_BASE" ]; then
     verify_commit "$RANGE_OVERRIDE_BASE" || die "cannot resolve override base '$RANGE_OVERRIDE_BASE'"
     verify_commit "$RANGE_OVERRIDE_HEAD" || die "cannot resolve override head '$RANGE_OVERRIDE_HEAD'"
@@ -300,34 +597,70 @@ resolve_ranges() {
 
   if find_push_args; then
     parse_push_args
-    if [ "${#SPECS[@]}" -gt 0 ] && [ "$SPECS_RELIABLE" -eq 1 ] && [ "$WIDE" -eq 0 ]; then
-      local rs out rc
-      if [ "$DELETE_ONLY" -eq 1 ]; then
-        note "mode=delete remote=$REMOTE specs=${SPECS[*]}: deletion publish, no commits to validate"
-        return 0
-      fi
-      note "mode=refspec remote=$REMOTE specs=${SPECS[*]}"
-      for rs in "${SPECS[@]}"; do
-        out=""
-        rc=0
-        out="$(refspec_range "$rs")" || rc=$?
-        if [ "$rc" -eq 2 ]; then
-          note "refspec '$rs': deletion publish, no commits to validate"
-          continue
-        fi
-        RANGES+=("$out")
-      done
+    if [ "$PUSH_UNPARSEABLE" -eq 1 ]; then
+      die "found a git push whose command line could not be parsed; refusing to validate the current branch instead"
+    fi
+    if [ "$SPECS_RELIABLE" -ne 1 ]; then
+      die "cannot parse the git push options (${PUSH_ARGS[*]:-<none>}); refusing to guess which refs are pushed. Verify them with: bash tools/push-range.sh --range <base> <head>"
+    fi
+    if [ "$REMOTE_EXPLICIT" -eq 0 ]; then
+      resolve_default_remote
+    fi
+
+    if [ "$DELETE_ONLY" -eq 1 ]; then
+      note "mode=delete remote=$REMOTE specs=${SPECS[*]:-<none>}: deletion publish, no commits to validate"
       return 0
     fi
     if [ "$WIDE" -eq 1 ]; then
-      resolve_wide "unrecognized or multi-ref push: every local commit not on $REMOTE is validated"
+      resolve_wide "explicit wide push: every local commit not on $REMOTE is validated"
       return 0
     fi
-    # reliable-looking bare `git push` (no refspecs): push.default decides
-    if [ "$(git config push.default 2>/dev/null || printf simple)" = "matching" ]; then
-      resolve_wide "push.default=matching"
+
+    if [ "${#SPECS[@]}" -eq 0 ]; then
+      load_config_specs
+      if [ "${#CONFIG_SPECS[@]}" -gt 0 ]; then
+        SPECS=("${CONFIG_SPECS[@]}")
+        note "mode=configured-refspec remote=$REMOTE specs=${SPECS[*]}"
+      fi
+    fi
+
+    if [ "${#SPECS[@]}" -gt 0 ]; then
+      [ "${#CONFIG_SPECS[@]}" -gt 0 ] ||
+        note "mode=refspec remote=$REMOTE specs=${SPECS[*]}"
+      local rs
+      for rs in "${SPECS[@]}"; do
+        case "$rs" in
+          ^*) NEGATIVE_PATTERNS+=("${rs#^}") ;;
+        esac
+      done
+      for rs in "${SPECS[@]}"; do
+        case "$rs" in
+          ^*) continue ;;
+        esac
+        append_refspec_ranges "$rs"
+      done
       return 0
     fi
+
+    # A bare push with no configured refspec: push.default decides.
+    local push_default
+    push_default="$(cfg_get push.default || true)"
+    [ -n "$push_default" ] || push_default=simple
+    push_default="${push_default,,}"
+    case "$push_default" in
+      matching)
+        resolve_wide "push.default=matching"
+        return 0 ;;
+      nothing)
+        note "push.default=nothing: no refs would be published"
+        return 0 ;;
+      simple|current|upstream|tracking)
+        ;;                          # fall through to current-branch mode
+      *)
+        die "unsupported push.default '$push_default'; cannot determine the pushed refs" ;;
+    esac
+  elif [ "$PUSH_UNPARSEABLE" -eq 1 ]; then
+    die "found a git push whose command line could not be parsed; refusing to validate the current branch instead"
   fi
 
   local out
@@ -407,7 +740,7 @@ do_print() {
 # Paths whose change invalidates the compiled gate. Kept in sync with the
 # build inputs listed in AGENTS.md; docs-only pushes intentionally fall
 # outside it.
-RELEVANT_RE='^(CMakeLists\.txt|CMakePresets\.json|cmake/|src/|include/|experiments/|tests/|tools/|lefthook\.yml$|\.github/workflows/|third_party/(sluice|duckdb)$)'
+RELEVANT_RE='^(CMakeLists\.txt|CMakePresets\.json|cmake/|src/|include/|experiments/|tests/|benchmarks/|tools/|lefthook\.yml$|\.github/workflows/|third_party/(sluice|duckdb)$)'
 
 do_files() {
   local r base head sha out=""
@@ -426,6 +759,11 @@ do_files() {
 # 2 = undeterminable (must fail the gate, never skip it).
 do_relevant() {
   local files
+  case "${DUDUDU_FORCE_BUILD_GATE:-0}" in
+    1|true|yes)
+      note "relevant: DUDUDU_FORCE_BUILD_GATE is set; forcing the build gate"
+      return 0 ;;
+  esac
   if [ "${#RANGES[@]}" -eq 0 ] && [ "${#ROOTS[@]}" -eq 0 ]; then
     note "relevant: deletion-only or no-op push; build gate not needed"
     return 1
