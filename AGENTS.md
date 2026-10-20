@@ -67,7 +67,8 @@ header per commit.
 Lefthook enforces this locally (`commit-msg`, `pre-commit`, `pre-push` — run
 `lefthook install` once after cloning). Do not bypass with `--no-verify`;
 fix the header instead. The pre-push gate never rewrites history and never
-writes to the index or worktree. CI (`.github/workflows/repo-policy.yml`)
+mutates the index or tracked files (the compile gate writes only ignored
+`build/` artifacts). CI (`.github/workflows/repo-policy.yml`)
 checks the PR title and runs the checker self-test — nothing else. Its
 **Repository Policy PASS** is a policy verdict, never a build or correctness
 verdict. Never report it as `BUILD_PASS` or `CORRECTNESS_PASS`.

@@ -162,9 +162,15 @@ check_file() {
     printf 'ERROR: %s: message file contains non-text control characters\n' "$label" >&2
     return 1
   fi
-  # Strip '#' comment lines exactly like git strips them after this hook runs.
+  # Strip comment lines exactly like git strips them after this hook runs,
+  # honoring core.commentChar (git's default; 'auto' keeps '#').
+  local comment_char
+  comment_char="$(git config --get core.commentChar 2>/dev/null || true)"
+  if [ -z "$comment_char" ] || [ "$comment_char" = "auto" ]; then
+    comment_char='#'
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
-    [[ $line == '#'* ]] && continue
+    [[ $line == "$comment_char"* ]] && continue
     filtered+="$line"$'\n'
   done < "$path"
 
