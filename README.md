@@ -92,8 +92,8 @@ ctest --test-dir build/cmake --output-on-failure
 Commits and PR titles follow [Conventional Commits](docs/development/commit-convention.md):
 `<type>(<scope>): <subject>` with a required kebab-case scope (e.g.
 `feat(adapter): add native filesystem wrapper`). Lefthook enforces the rule
-locally; GitHub Actions checks only the PR title (**Repository Policy PASS**
-— a policy verdict, not a build verdict).
+locally; GitHub Actions checks the PR title plus the checker self-test
+(**Repository Policy PASS** — a policy verdict, not a build verdict).
 
 One-time setup after cloning:
 
@@ -111,6 +111,7 @@ Fast local verification (what `pre-push` runs, sequentially, fail-fast):
 bash tools/check-commit.sh --self-test                          # checker refutes itself
 bash tools/push-range.sh validate                               # commits this push would publish
 bash tools/push-range.sh whitespace                             # whitespace in those commits
+bash tools/tests/push-range-test.sh                             # resolver scenarios (dev-run)
 cmake --preset sluice-only && \
 cmake --build build/cmake-sluice --parallel 4 && \
 ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1

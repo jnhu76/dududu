@@ -34,8 +34,9 @@
 # recovers the remote from the `git push` command line itself (default:
 # origin).
 #
-# Canonical manual entrypoint (executes the complete gate; can never be a
-# vacuous pass):
+# Canonical manual entrypoint (executes the complete gate; with the config
+# present it cannot be a vacuous pass — a branch that deletes this file is
+# outside machine enforcement, exactly like `git push --no-verify`):
 #
 #     lefthook run pre-push --all-files
 
