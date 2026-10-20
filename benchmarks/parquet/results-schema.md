@@ -58,24 +58,33 @@ protocol.md; provenance in `run-manifest.txt`)
 Per-benchmark CV on the sampled pass: 1.1–7.6% (T3/small is the noisy end;
 the load-bearing T3/medium rows sit at 3.0–4.0%). The 4-thread full-scan
 variant ran at 10–16% CV and is exploratory only. Every attribution ratio
-above is within noise under the decision rule below.
+above is unresolved under the resolution rule below.
 
-Decision rule for "within noise" in the table above: a ratio is called
-within noise when its magnitude is below the larger of the two arms' CVs
-(one relative standard deviation of the mean over 10 samples). No
-p-quantiles or significance tests are reported because the sample count
-does not support them.
+Resolution rule for the table above: a ratio is called unresolved when its
+magnitude is below the larger of the two arms' CVs. This is a descriptive
+heuristic for what this protocol can resolve, not a confidence interval,
+significance test or statistical-equivalence claim, and it is not an upper
+bound on systematic run-order bias: the 10 repetitions of one benchmark
+execute consecutively (arms alternate per workload, not per repetition),
+so arm samples are not paired. What the evidence supports is: the observed
+differences were small relative to run-to-run variability, and no benefit
+or penalty for Sluice could be resolved under these conditions (warm
+cache, one synchronous thread, this host). It does not establish that the
+true difference is zero, and no p-quantiles or significance tests are
+reported because the sample count and design do not support them.
 
-Reading, honestly: on a warm cache and one synchronous thread, the three
-arms are statistically indistinguishable everywhere that matters, and the
-I/O-only replay agrees. Wrapper tax ≈ 0 (P1 is the same `pread` primitive
-as `ReadableFile`'s). Sluice effect ≈ 0 — `read_at` costs no more than
-`pread` for this request stream (large sequential-ish positional reads, 57
-requests for 174 MB). Nothing here licenses a claim that Sluice is faster
-or slower in production conditions; it licenses "no measurable synchronous
-overhead on this workload, on this host, warm cache", plus the request
-profiles themselves. The interesting bottlenecks to test next are (1) cold
-cache / small random reads, where per-call fixed costs matter, (2) the
-async request path (Sluice ThreadPool/io_uring), which is exactly what the
-D-arms round is for, and (3) buffered-stream reader settings that change
-the request-size distribution.
+Reading, honestly: on a warm cache and one synchronous thread, no
+arm's difference from another rose above run-to-run variability anywhere
+that matters, and the I/O-only replay agrees. Wrapper tax is unresolved
+at this resolution (P1 is the same `pread` primitive as `ReadableFile`'s).
+Sluice effect is unresolved — `read_at` shows no measurable synchronous
+cost relative to `pread` for this request stream (large sequential-ish
+positional reads, 57 requests for 174 MB). Nothing here licenses a claim
+that Sluice is faster or slower in production conditions; it licenses
+"no measurable synchronous overhead on this workload, on this host, warm
+cache", plus the request profiles themselves. The interesting bottlenecks
+to test next are (1) cold cache / small random reads, where per-call
+fixed costs matter, (2) the async request path (Sluice
+ThreadPool/io_uring), which is exactly what the D-arms round is for, and
+(3) buffered-stream reader settings that change the request-size
+distribution.

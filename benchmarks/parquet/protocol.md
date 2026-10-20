@@ -112,12 +112,15 @@ manifest-less empty build.
 Two documented deviations from the strictest reading of paired-run
 discipline: (a) repetitions within one benchmark execute consecutively —
 Google Benchmark runs registration order per benchmark, so arms alternate
-per workload but not per repetition; on a warm cache the residual order
-bias is bounded by the reported CVs and both passes (warm + sampled) are
-kept as artifacts. (b) The oracle's NaN canonicalization is the standard
-quiet-NaN bit pattern `0x7ff8000000000000` (changed from the original
-zero-pattern so a NaN-to-+0.0 decode bug cannot hide; no fixture emits
-NaN, the rule is future-proofing).
+per workload but not per repetition; arm samples are therefore not paired,
+the residual run-order bias is not independently quantified, and the
+CV-based resolution rule in `results-schema.md` is a descriptive
+heuristic, not a bound on that bias, a confidence interval or a
+significance test. Both passes (warm + sampled) are kept as artifacts.
+(b) The oracle's NaN canonicalization is the standard quiet-NaN bit
+pattern `0x7ff8000000000000` (changed from the original zero-pattern so a
+NaN-to-+0.0 decode bug cannot hide; no fixture emits NaN, the rule is
+future-proofing).
 
 Cache protocol: warm OS page cache only. Nothing drops caches (no root,
 no `sync`-as-invalidation). Cold cache is a separate experiment that has
