@@ -4,16 +4,27 @@
 #   bash benchmarks/parquet/run-bench.sh [small|medium|both]
 #
 # What it does, in order:
-#   1. builds the fixture datasets if absent (generation is never timed);
-#   2. captures the I/O request trace from a diagnostic P1 run (untimed);
-#   3. runs pass 1 as cache warm-up (results kept for reference only);
-#   4. runs pass 2, the sampled pass: Google Benchmark with
+#   1. builds the fixture datasets, or verifies an existing one against the
+#      identity record its generator wrote (existence alone proves nothing);
+#      generation and verification are never timed;
+#   2. captures the I/O request trace from diagnostic P1 and P2 runs
+#      (untimed) and validates both structurally (validate-trace.sh);
+#   3. writes the provenance manifest — only after the artifacts it names
+#      exist and verify, so a fresh checkout can never record a manifest
+#      without its dataset lines;
+#   4. runs pass 1 as cache warm-up (results kept for reference only);
+#   5. runs pass 2, the sampled pass: Google Benchmark with
 #      --benchmark_repetitions=$REPS independent samples per benchmark,
 #      arms registered interleaved per workload (P0,P1,P2 back-to-back);
-#   5. writes raw JSON to build/parquet-results/ and a human summary next to it.
+#      every pass is admitted by validate-results.sh before it counts;
+#   6. writes raw JSON to build/parquet-results/ and a human summary next to it.
 #
 # Cache protocol: warm OS page cache only. Nothing here drops caches; the
 # first pass exists so the second pass never pays a cold-cache tax.
+#
+# The self-test (tests/run-bench-protocol-test.sh) sources this file and
+# drives ensure_fixture/write_manifest with stubbed tool paths; that is why
+# the executable flow lives in main() behind the source guard below.
 set -euo pipefail
 
 REPS="${DUDUDU_BENCH_REPS:-10}"
@@ -28,44 +39,104 @@ fixture="$build_dir/experiments/parquet/parquet_fixture"
 tracer="$build_dir/experiments/parquet/parquet_trace"
 bench="$build_dir/experiments/parquet/parquet_bench"
 
-mkdir -p "$data_dir" "$results_dir"
-
-# Provenance manifest (AGENTS rule 1 / matrix rule 4): every result set
-# carries both SHAs, the SDK identity, the sampling parameters and the host.
-dududu_sha=$(git rev-parse HEAD)
-sluice_sha=$(git -C third_party/sluice rev-parse HEAD)
-{
-    echo "DUDUDU_SHA=$dududu_sha"
-    echo "SLUICE_SHA=$sluice_sha"
-    echo "SLUICE_PROFILE=noliburing"
-    echo "SDK_PREFIX=build/sluice-sdk/noliburing"
-    echo "ARROW_VERSION=$(pkg-config --modversion arrow 2>/dev/null || echo unknown)"
-    echo "PARQUET_VERSION=$(pkg-config --modversion parquet 2>/dev/null || echo unknown)"
-    echo "REPS=$REPS"
-    echo "WARMUP_SECONDS=$WARMUP_SECONDS"
-    echo "KERNEL=$(uname -r)"
-    echo "DATE_UTC=$(date -u +%FT%TZ)"
-    echo "COMPILER=$(g++ -dumpversion)"
-    for f in "$data_dir"/small-none.parquet "$data_dir"/medium-none.parquet; do
-        [[ -f "$f" ]] && echo "DATASET $f $(sha256sum "$f" | awk '{print $1}') $(stat -c%s "$f")"
-    done
-} > "$results_dir/run-manifest.txt"
-
-datasets="${1:-both}"
-[[ "$datasets" == "small" || "$datasets" == "medium" || "$datasets" == "both" ]] || {
-    echo "usage: run-bench.sh [small|medium|both]" >&2
-    exit 2
-}
-
-gen() { # name
+# Fixture identity: a dataset is usable only if its bytes still hash to the
+# digest the generator recorded in the sidecar manifest. Anything else
+# (missing, truncated, mutated, sidecar gone) regenerates once, and a
+# regenerated dataset that still fails its own record is a hard error.
+ensure_fixture() { # <name>
     local name="$1"
-    if [[ ! -f "$data_dir/$name-none.parquet" ]]; then
+    local file="$data_dir/$name-none.parquet"
+    local sidecar="$data_dir/manifest-$name-none.json"
+    local verified=0
+    if [[ -f "$file" && -f "$sidecar" ]]; then
+        local want have
+        want=$(jq -r '.sha256 // empty' "$sidecar" 2>/dev/null || true)
+        have=$(sha256sum "$file" | awk '{print $1}')
+        if [[ -n "$want" && "$want" == "$have" ]]; then
+            verified=1
+        else
+            echo "== $name fixture fails its identity record (want=$want have=$have); regenerating"
+        fi
+    fi
+    if [[ "$verified" -eq 0 ]]; then
         echo "== generating $name fixture (not timed)"
-        "$fixture" --out "$data_dir" --dataset "$name"
+        "$fixture" --out "$data_dir" --dataset "$name" --compression none \
+            || { echo "run-bench: fixture generation failed: $name" >&2; return 1; }
+        local want2 have2
+        want2=$(jq -r '.sha256 // empty' "$sidecar" 2>/dev/null || true)
+        have2=$(sha256sum "$file" | awk '{print $1}')
+        if [[ -z "$want2" || "$want2" != "$have2" ]]; then
+            echo "run-bench: regenerated $name fixture still fails its identity record" >&2
+            return 1
+        fi
     fi
 }
 
-run_pass() { # pass-name
+dataset_line() { # <file> -> "DATASET <path> <sha256> <bytes>", fail if absent
+    local f="$1"
+    if [[ ! -f "$f" ]]; then
+        echo "run-bench: manifest cannot record a missing artifact: $f" >&2
+        return 1
+    fi
+    echo "DATASET $f $(sha256sum "$f" | awk '{print $1}') $(stat -c%s "$f")"
+}
+
+trace_line() { # <file> -> "TRACE <path> <sha256> <lines>"
+    local f="$1"
+    if [[ ! -f "$f" ]]; then
+        echo "run-bench: manifest cannot record a missing artifact: $f" >&2
+        return 1
+    fi
+    echo "TRACE $f $(sha256sum "$f" | awk '{print $1}') $(wc -l < "$f")"
+}
+
+# Provenance manifest (AGENTS rule 1 / matrix rule 4): every result set
+# carries both SHAs, the SDK identity, the sampling parameters, the host and
+# the digests of every artifact the numbers depend on. Called only after the
+# datasets exist and verify; a selected dataset that cannot be recorded is a
+# hard failure, never a silently incomplete manifest.
+write_manifest() { # <selected-datasets...>
+    if [[ "$#" -eq 0 ]]; then
+        echo "run-bench: refusing to write a manifest for no datasets" >&2
+        return 1
+    fi
+    local name
+    for name in "$@"; do
+        if [[ ! -f "$data_dir/$name-none.parquet" ]]; then
+            echo "run-bench: manifest cannot record a missing dataset: $name" >&2
+            return 1
+        fi
+    done
+    mkdir -p "$results_dir"
+    local dududu_sha sluice_sha
+    dududu_sha=$(git rev-parse HEAD)
+    sluice_sha=$(git -C third_party/sluice rev-parse HEAD)
+    {
+        echo "DUDUDU_SHA=$dududu_sha"
+        echo "SLUICE_SHA=$sluice_sha"
+        echo "SLUICE_PROFILE=noliburing"
+        echo "SDK_PREFIX=build/sluice-sdk/noliburing"
+        echo "ARROW_VERSION=$(pkg-config --modversion arrow 2>/dev/null || echo unknown)"
+        echo "PARQUET_VERSION=$(pkg-config --modversion parquet 2>/dev/null || echo unknown)"
+        echo "REPS=$REPS"
+        echo "WARMUP_SECONDS=$WARMUP_SECONDS"
+        echo "KERNEL=$(uname -r)"
+        echo "DATE_UTC=$(date -u +%FT%TZ)"
+        echo "COMPILER=$(g++ -dumpversion)"
+        local name
+        for name in "$@"; do
+            dataset_line "$data_dir/$name-none.parquet"
+        done
+        local t
+        for t in "$results_dir"/trace-medium-t3.jsonl "$results_dir"/trace-medium-t3-p2.jsonl; do
+            if [[ -f "$t" ]]; then
+                trace_line "$t"
+            fi
+        done
+    } > "$results_dir/run-manifest.txt"
+}
+
+run_pass() { # pass-name — validated against the full roster before it counts
     local pass="$1"
     local args=()
     if [[ -f "$data_dir/small-none.parquet" ]]; then
@@ -94,32 +165,56 @@ run_pass() { # pass-name
     # reaches the summary.
     local trace_args=()
     [[ -f "$results_dir/trace-medium-t3.jsonl" ]] && trace_args=(--trace)
-    bash benchmarks/parquet/validate-results.sh "$json" "$datasets" "$REPS" "${trace_args[@]}"
+    bash benchmarks/parquet/validate-results.sh "$json" "$selected" "$REPS" "${trace_args[@]}"
 }
 
-[[ "$datasets" == "small" || "$datasets" == "both" ]] && gen small
-[[ "$datasets" == "medium" || "$datasets" == "both" ]] && gen medium
+main() {
+    local selected="${1:-both}"
+    [[ "$selected" == "small" || "$selected" == "medium" || "$selected" == "both" ]] || {
+        echo "usage: run-bench.sh [small|medium|both]" >&2
+        exit 2
+    }
+    mkdir -p "$data_dir" "$results_dir"
 
-if [[ "$datasets" == "medium" || "$datasets" == "both" ]]; then
-    echo "== capturing I/O trace (diagnostic, untimed)"
-    "$tracer" --file "$data_dir/medium-none.parquet" --workload t3_full \
-              --arm p1-native --out "$results_dir/trace-medium-t3.jsonl"
-    "$tracer" --file "$data_dir/medium-none.parquet" --workload t3_full \
-              --arm p2-sluice --out "$results_dir/trace-medium-t3-p2.jsonl"
-    # Structural gate on the captured evidence: every line valid JSONL and
-    # the two arms' request lists identical, checked with jq by a validator
-    # that shares no code with the C++ trace parser.
-    bash benchmarks/parquet/validate-trace.sh \
-        "$results_dir/trace-medium-t3.jsonl" "$results_dir/trace-medium-t3-p2.jsonl"
+    local names=()
+    [[ "$selected" == "small" || "$selected" == "both" ]] && names+=(small)
+    [[ "$selected" == "medium" || "$selected" == "both" ]] && names+=(medium)
+    local name
+    for name in "${names[@]}"; do
+        ensure_fixture "$name"
+    done
+
+    local trace_args=()
+    if [[ "$selected" == "medium" || "$selected" == "both" ]]; then
+        echo "== capturing I/O trace (diagnostic, untimed)"
+        "$tracer" --file "$data_dir/medium-none.parquet" --workload t3_full \
+                  --arm p1-native --out "$results_dir/trace-medium-t3.jsonl"
+        "$tracer" --file "$data_dir/medium-none.parquet" --workload t3_full \
+                  --arm p2-sluice --out "$results_dir/trace-medium-t3-p2.jsonl"
+        # Structural gate on the captured evidence: every line valid JSONL and
+        # the two arms' request lists identical, checked with jq by a validator
+        # that shares no code with the C++ trace parser.
+        bash benchmarks/parquet/validate-trace.sh \
+            "$results_dir/trace-medium-t3.jsonl" "$results_dir/trace-medium-t3-p2.jsonl"
+        trace_args=(--trace)
+    fi
+
+    # Manifest last among the preparation steps: everything it records
+    # (datasets, traces) now exists and has verified.
+    write_manifest "${names[@]}"
+
+    # Pass 1: warm the caches (file content + reader code paths). Discarded.
+    run_pass warmup-pass
+    # Pass 2: the sampled pass. Only this JSON feeds the summary.
+    run_pass measure-pass
+
+    echo "== summary"
+    bash benchmarks/parquet/summarize.sh "$results_dir/measure-pass.json" \
+        | tee "$results_dir/summary.txt"
+
+    echo "== raw results: $results_dir/{warmup-pass,measure-pass}.json"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
 fi
-
-# Pass 1: warm the caches (file content + reader code paths). Discarded.
-run_pass warmup-pass
-# Pass 2: the sampled pass. Only this JSON feeds the summary.
-run_pass measure-pass
-
-echo "== summary"
-bash benchmarks/parquet/summarize.sh "$results_dir/measure-pass.json" \
-    | tee "$results_dir/summary.txt"
-
-echo "== raw results: $results_dir/{warmup-pass,measure-pass}.json"

@@ -64,8 +64,10 @@ add_test(NAME parquet.trace.jsonl
          COMMAND bash "${CMAKE_SOURCE_DIR}/benchmarks/parquet/tests/validate-trace-test.sh")
 add_test(NAME parquet.bench.admit
          COMMAND bash "${CMAKE_SOURCE_DIR}/benchmarks/parquet/tests/validate-results-test.sh")
+add_test(NAME parquet.bench.protocol
+         COMMAND bash "${CMAKE_SOURCE_DIR}/benchmarks/parquet/tests/run-bench-protocol-test.sh")
 
 set_tests_properties(parquet.contract parquet.oracle parquet.trace parquet.trace.jsonl
-  parquet.bench.admit PROPERTIES
+  parquet.bench.admit parquet.bench.protocol PROPERTIES
   LABELS "parquet"
   TIMEOUT 600)

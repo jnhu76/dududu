@@ -74,20 +74,40 @@ never enters any sample.
 
 ## Sampling protocol
 
-`bash benchmarks/parquet/run-bench.sh both` writes a provenance manifest
-first (`build/parquet-results/run-manifest.txt`: `DUDUDU_SHA`, `SLUICE_SHA`,
-profile, SDK prefix, toolchain, repetitions, kernel, dataset digests), then:
+`bash benchmarks/parquet/run-bench.sh both` runs, in order:
 
-1. generate datasets if absent (untimed);
+1. generate or verify datasets (untimed) — an existing dataset is admitted
+   only if it still hashes to the digest in its sidecar
+   `manifest-<name>-none.json`; anything else (missing, mutated, record
+   gone) regenerates once, and a regenerated dataset that still fails its
+   own record is a hard error;
 2. capture the request trace from an untimed diagnostic P1 run, plus a P2
-   capture that must match it request-for-request;
-3. warm-up pass — full benchmark, results discarded (its only job is to
+   capture; `validate-trace.sh` (jq, independent of the C++ parser) then
+   checks every line is valid JSONL and the two arms' request lists are
+   identical;
+3. write the provenance manifest
+   (`build/parquet-results/run-manifest.txt`: `DUDUDU_SHA`, `SLUICE_SHA`,
+   profile, SDK prefix, toolchain, repetitions, kernel, dataset and trace
+   digests) — only after the artifacts it names exist and verify, so an
+   empty build can never produce a manifest without its dataset lines;
+4. warm-up pass — full benchmark, results discarded (its only job is to
    make the sampled pass warm-cache);
-4. sampled pass — Google Benchmark, `--benchmark_repetitions=10`,
-   `--benchmark_min_warmup_time=2`, arms registered interleaved per
-   workload so P0/P1/P2 run back-to-back;
-5. `summarize.sh` emits per-benchmark mean/median/CV and the attribution
+5. sampled pass — Google Benchmark, `--benchmark_repetitions=10`,
+   `--benchmark_min_warmup_time=2`, arms registered interleaved per workload
+   so P0/P1/P2 run back-to-back; every pass is admitted by
+   `validate-results.sh` (exact expected roster, 10 clean samples with
+   dense repetition indices and positive times per benchmark, no
+   `error_occurred` anywhere, no unexpected benchmarks) before its numbers
+   count — a partial or errored pass aborts the protocol;
+6. `summarize.sh` emits per-benchmark mean/median/CV and the attribution
    ratios.
+
+The protocol scripts carry negative-first self-tests that run with the
+suite as CTest `parquet.trace.jsonl`, `parquet.bench.admit` and
+`parquet.bench.protocol` (18 + 16 + 14 cases): each gate must be seen
+rejecting the malformed shapes it exists to stop, including the
+truncated-header trace the serializer bug once produced and a
+manifest-less empty build.
 
 Two documented deviations from the strictest reading of paired-run
 discipline: (a) repetitions within one benchmark execute consecutively —
