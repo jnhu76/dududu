@@ -12,8 +12,9 @@
 #   deletion (flag and refspec form), a brand-new remote, wide pushes
 #   (--all) with a root or another branch's invalid commit, matching
 #   refspecs (':' and '+:'), mirror pushes including remote-tracking refs,
-#   wildcard/negative refspecs, Git global options, configured refspecs, and
-#   malformed/absent push data.
+#   wildcard/negative refspecs, Git global options, configured refspecs,
+#   malformed/absent push data, and the immutable pre-policy boundary that
+#   exempts inherited R0 history without exempting new commits or roots.
 #
 # Usage: bash tools/tests/push-range-test.sh
 # Requirements: bash, git. No network; writes only under $(mktemp -d).
@@ -41,6 +42,7 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="$TMP/work"
 REMOTE="$TMP/remote.git"
 REMOTE2="$TMP/remote2.git"
+OTHER="$TMP/other"
 
 if [ ! -f "$TOOLS_DIR/push-range.sh" ] || [ ! -f "$TOOLS_DIR/check-commit.sh" ]; then
   printf 'RED: tools/push-range.sh or tools/check-commit.sh missing under %s\n' "$TOOLS_DIR"
@@ -69,6 +71,15 @@ rc=0
 # run_push <args...>: run git push from the work repo, capture output + status.
 run_push() {
   out="$(cd "$WORK" && git push "$@" 2>&1)"
+  rc=$?
+}
+# run_push_env KEY=VALUE <args...>: a real push with an environment override,
+# used to point the fixed pre-policy boundary at this scratch repository's
+# synthetic legacy history.
+run_push_env() {
+  local envspec="$1"
+  shift
+  out="$(cd "$WORK" && env "$envspec" git push "$@" 2>&1)"
   rc=$?
 }
 # run_resolver <args...>: manual invocation (no pre-push marker, no push data).
@@ -150,6 +161,8 @@ commit_empty "chore(repo): bootstrap"
 run_push origin main
 expect_ok_like "first push to an empty remote validates the new ref" "refs=1"
 expect_remote_has "first push reaches the remote" refs/heads/main
+# Point the bare remote's HEAD at main so later clones check out cleanly.
+git --git-dir="$REMOTE" symbolic-ref HEAD refs/heads/main
 git -C "$WORK" fetch -q origin
 
 # =============================================================================
@@ -558,6 +571,78 @@ rc=$?
 expect_ok_like "literal {1} selects manual mode and ignores stdin" "PASS: 1 commit\(s\) validated"
 
 git -C "$WORK" branch -qD stdinok stdinbad
+
+# =============================================================================
+# 21. Grandfathered R0 history (P1): a new ref validates only commits not
+#     reachable from the immutable pre-policy boundary. Inherited legacy
+#     headers are exempt; new commits and unrelated roots are still checked.
+#     The scratch repo points DUDUDU_GRANDFATHER_BOUNDARY at its own synthetic
+#     legacy tip (the real default is the R0 main commit).
+# =============================================================================
+# shellcheck disable=SC1083  # ^{tree} is git syntax, not shell
+legacy_tree="$(git -C "$WORK" rev-parse 'main^{tree}')"
+# shellcheck disable=SC1083  # ^{tree} is git syntax, not shell
+legacy_root="$(cd "$WORK" && git commit-tree "$legacy_tree" -m "chore: legacy R0 root without a scope")"
+# shellcheck disable=SC1083  # ^{tree} is git syntax, not shell
+legacy_base="$(cd "$WORK" && git commit-tree "$legacy_tree" -p "$legacy_root" -m "build: legacy R0 commit without a scope")"
+git -C "$WORK" branch legacy-base "$legacy_base"
+
+git -C "$WORK" checkout -q -b legacy-feature legacy-base
+commit_empty "feat(adapter): add native filesystem wrapper"
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=$legacy_base" origin legacy-feature
+expect_ok_like "new branch inherits pre-policy R0 history without re-judging it" "PASS: 1 commit\(s\) validated"
+expect_remote_has "grandfathered new branch reaches the remote" refs/heads/legacy-feature
+
+git -C "$WORK" checkout -q -b legacy-bad legacy-base
+commit_empty "feat: invalid new commit on inherited history"
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=$legacy_base" origin legacy-bad
+expect_fail_like "new invalid commit on inherited history is rejected" "expected '<type"
+expect_remote_lacks "rejected inherited branch publishes nothing" refs/heads/legacy-bad
+if printf '%s\n' "$out" | grep -Fq "without a scope"; then
+  report_fail "inherited legacy headers are not re-judged"
+else
+  report_pass "inherited legacy headers are not re-judged"
+fi
+
+# An unrelated orphan root is not reachable from the boundary, so it must be
+# admitted only when its own header is conventional.
+# shellcheck disable=SC1083  # ^{tree} is git syntax, not shell
+legacy_orphan_bad="$(cd "$WORK" && git commit-tree "$legacy_tree" -m "feat: invalid unrelated root")"
+git -C "$WORK" update-ref refs/heads/legacy-orphan-bad "$legacy_orphan_bad"
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=$legacy_base" origin legacy-orphan-bad
+expect_fail_like "unrelated invalid root is not grandfathered" "expected '<type"
+expect_remote_lacks "rejected unrelated root publishes nothing" refs/heads/legacy-orphan-bad
+
+# shellcheck disable=SC1083  # ^{tree} is git syntax, not shell
+legacy_orphan_ok="$(cd "$WORK" && git commit-tree "$legacy_tree" -m "chore(repo): valid unrelated root")"
+git -C "$WORK" update-ref refs/heads/legacy-orphan-ok "$legacy_orphan_ok"
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=$legacy_base" origin legacy-orphan-ok
+expect_ok_like "unrelated valid root is still admitted" "PASS: 1 commit\(s\) validated"
+expect_remote_has "admitted unrelated root reaches the remote" refs/heads/legacy-orphan-ok
+
+# A remote object this repo never fetched must use the same boundary instead of
+# re-judging the inherited history.
+git clone -q "$REMOTE" "$OTHER"
+git -C "$OTHER" config user.email push-range-test@dududu.local
+git -C "$OTHER" config user.name "push-range test"
+git -C "$OTHER" checkout -q legacy-feature
+git -C "$OTHER" commit -q --allow-empty -m "docs(repo): remote-only tip"
+git -C "$OTHER" push -q origin legacy-feature
+git -C "$WORK" checkout -q legacy-feature
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=$legacy_base" --force origin legacy-feature
+expect_ok_like "absent remote object applies the grandfather boundary" "absent locally"
+if printf '%s\n' "$out" | grep -Eq 'PASS: 1 commit\(s\) validated'; then
+  report_pass "absent remote object validates only post-boundary commits"
+else
+  report_fail "absent remote object validates only post-boundary commits"
+  printf '%s\n' "$out" | sed 's/^/     | /'
+fi
+
+# A malformed boundary override is a hard failure, never an exemption.
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=not-a-sha" origin legacy-bad
+expect_fail_like "non-hexadecimal boundary is a hard failure" "grandfather boundary 'not-a-sha'"
+run_push_env "DUDUDU_GRANDFATHER_BOUNDARY=1234567" origin legacy-bad
+expect_fail_like "short boundary is a hard failure" "not a full commit id"
 
 # =============================================================================
 # summary

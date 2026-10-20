@@ -18,9 +18,12 @@
 #   * local sha is the zero id — deletion, no commits to validate;
 #   * remote sha is non-zero and present locally — validate remote..local,
 #     the exact commit set this ref publishes;
-#   * remote sha is zero (new remote ref) or absent locally — validate the
-#     full history of the local ref (root messages separately) because Git's
-#     line alone cannot establish a narrower, still-safe base;
+#   * remote sha is zero (new remote ref) or absent locally — validate every
+#     commit NOT reachable from the immutable pre-policy boundary, because
+#     Git's line alone cannot establish a narrower, still-safe base. History
+#     reachable from that boundary is grandfathered R0 history and is never
+#     re-judged; a new commit, a new side branch or an unrelated root is
+#     still checked;
 #   * malformed line, missing local object, or a manual run with no baseline —
 #     hard failure. Never guess a narrower set, never report NO_NEW_COMMITS
 #     for something that was not checked.
@@ -46,9 +49,18 @@
 #   lefthook leaves in manual runs selects manual mode.
 #   DUDUDU_FORCE_BUILD_GATE=1 makes `relevant` report 0 unconditionally, so
 #   the manual full gate can force build+CTest on a docs-only range.
+#   DUDUDU_GRANDFATHER_BOUNDARY overrides the fixed pre-policy boundary. It is
+#   a test seam only; production runs use the immutable R0 main SHA below.
 
 set -u -o pipefail
 export LC_ALL=C.UTF-8
+
+# The pre-R0.1 main tip (merge of the R0 foundation). Every commit reachable
+# from this SHA predates the required-scope policy and is never re-judged.
+# Deliberately a fixed commit id, not a moving ref such as origin/main: a
+# moving base would silently exempt whatever main contains at push time.
+readonly GRANDFATHER_BOUNDARY_DEFAULT="6e5f5c6db08f5b6780e13d92f357c65cdc865538"
+GRANDFATHER_BOUNDARY="${DUDUDU_GRANDFATHER_BOUNDARY:-$GRANDFATHER_BOUNDARY_DEFAULT}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   printf 'push-range: ERROR: not inside a git repository\n' >&2
@@ -72,6 +84,7 @@ usage: tools/push-range.sh [validate|whitespace|relevant|files|print] [remote] [
   remote      manual-mode default remote (origin when omitted; a real push uses
               the remote Git passed to the pre-push hook)
   --range B H validate the explicit range instead of resolving the push
+  DUDUDU_GRANDFATHER_BOUNDARY overrides the fixed pre-policy boundary (tests)
 exit codes: 0 pass, 1 policy failure or undeterminable push, 2 usage error
 EOF
 }
@@ -105,6 +118,8 @@ else
 fi
 
 verify_commit() { git rev-parse --verify --quiet "$1^{commit}" >/dev/null 2>&1; }
+# resolve_commit <rev>: print the commit id, nothing on failure.
+resolve_commit() { git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null; }
 
 # empty-tree object hash, used to diff-check root commits
 EMPTY_TREE="$(git hash-object -t tree /dev/null)"
@@ -138,11 +153,26 @@ append_root() {
 }
 
 # append_full_history <commit> <ref>: a new remote ref (or a remote object not
-# present locally) has no locally provable narrower base. Validate every
-# commit reachable from <commit>: each root by message, everything else as one
-# root..tip range. A superset is safe; a guess is not.
+# present locally) has no locally provable narrower base. Exempt exactly the
+# commits already reachable from the immutable R0 boundary; validate the rest,
+# including a newly introduced unrelated root. When the boundary object is not
+# available locally (e.g. a shallow clone), fall back to validating the whole
+# history: a false rejection is recoverable, a silent pass is not.
 append_full_history() {
   local commit="$1" ref="$2" base sha
+  case "$GRANDFATHER_BOUNDARY" in
+    ''|*[!0-9a-f]*)
+      die "grandfather boundary '$GRANDFATHER_BOUNDARY' is not a lowercase hexadecimal commit id; refusing to guess which history is exempt" ;;
+  esac
+  if [ "${#GRANDFATHER_BOUNDARY}" -ne 40 ] && [ "${#GRANDFATHER_BOUNDARY}" -ne 64 ]; then
+    die "grandfather boundary '$GRANDFATHER_BOUNDARY' is not a full commit id; refusing to guess which history is exempt"
+  fi
+  if base="$(resolve_commit "$GRANDFATHER_BOUNDARY")"; then
+    append_range "$base" "$commit"
+    note "ref $ref: validating $base..$commit (history reachable from the R0 boundary ${base:0:12} is grandfathered)"
+    return 0
+  fi
+  note "ref $ref: grandfather boundary ${GRANDFATHER_BOUNDARY:0:12} is absent locally; validating the full history"
   local -a roots=()
   mapfile -t roots < <(git rev-list --max-parents=0 "$commit" 2>/dev/null)
   if [ "${#roots[@]}" -eq 0 ]; then
