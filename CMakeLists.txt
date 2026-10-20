@@ -18,6 +18,9 @@ endif()
 option(DUDUDU_BUILD_SLUICE_SDK "Build the Sluice static SDK through xmake" ON)
 option(DUDUDU_BUILD_DUCKDB_NATIVE "Build the unmodified DuckDB native baseline" ON)
 option(DUDUDU_BUILD_TESTS "Configure CTest consumers and smoke tests" ON)
+option(DUDUDU_ENABLE_PARQUET
+       "Configure the standalone Parquet x Sluice experiment (needs system Arrow/Parquet/Google Benchmark)"
+       OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Sluice)
@@ -36,4 +39,10 @@ if(DUDUDU_BUILD_TESTS)
   if(DUDUDU_BUILD_SLUICE_SDK)
     add_subdirectory(tests)
   endif()
+endif()
+
+# Last, and intentionally separate: the Parquet experiment adds its own
+# find_package calls and tests and is never on the sluice-only path.
+if(DUDUDU_ENABLE_PARQUET)
+  add_subdirectory(experiments/parquet)
 endif()
