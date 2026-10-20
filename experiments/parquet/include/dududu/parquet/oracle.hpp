@@ -15,7 +15,7 @@
 //           integer   -> "i" + signed decimal + "\n"
 //           float     -> IEEE-754 bit pattern, 16 lowercase hex digits + "\n"
 //                        (NaN canonicalizes to 0000000000000000)
-//           string    -> base16 length ":" base16 bytes "\n"
+//           string    -> base16 length ":" raw utf8 bytes "\n"
 //   * No std::hash, no pointers, no object layout: everything is derived from
 //     logical values and names only.
 //

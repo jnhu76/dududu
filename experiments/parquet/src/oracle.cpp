@@ -81,10 +81,12 @@ arrow::Result<OracleReport> compute_oracle(const arrow::Table& table) {
                 } else if (type->id() == arrow::Type::DOUBLE) {
                     const double v =
                         static_cast<const arrow::DoubleArray&>(*chunk).Value(i);
-                    std::uint64_t bits = 0;
+                    std::uint64_t bits;
                     if (std::isnan(v)) {
-                        // Canonical NaN: every NaN representation collides.
-                        bits = 0;
+                        // Canonical NaN: the standard quiet-NaN pattern,
+                        // which cannot collide with any finite value (0
+                        // would collide with +0.0 and hide a NaN<->0 bug).
+                        bits = 0x7ff8000000000000ULL;
                     } else {
                         std::memcpy(&bits, &v, sizeof(bits));
                     }
