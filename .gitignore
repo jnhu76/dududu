@@ -7,6 +7,10 @@
 # clangd index produced by the xmake compile_commands plugin
 /.cache/
 
+# Local assistant session state (work log). Project-level skills under
+# .workbuddy/skills/ stay committable; only the scratch memory is ignored.
+/.workbuddy/memory/
+
 # Perf traces and raw benchmark logs are evidence artifacts, not sources.
 *.perf
 perf.data

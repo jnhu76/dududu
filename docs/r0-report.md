@@ -231,8 +231,10 @@ cmake --build build/cmake                # Sluice SDK (both profiles) + DuckDB n
 ctest --test-dir build/cmake --output-on-failure
 ```
 
-Expect 9/9 tests to pass, with `duckdb.benchmark.smoke` taking a few seconds
-after the benchmark data exists and considerably longer on the first run.
+Measured on a fresh clone of this branch: `cmake --build build/cmake -j8`
+completed in 12m32s, and `ctest` reported 9/9 passed in 5.8s afterwards
+(`duckdb.benchmark.smoke` 5.64s once the TPC-H sf=1 parquet already exists).
+Both submodules reported no tracked or untracked changes after the run.
 
 Sluice-only loop (fast, no DuckDB build):
 
@@ -256,3 +258,51 @@ in `README.md`.
 - `cmake -P` returns non-zero on `message(FATAL_ERROR)`, so a failed check in a
   CTest script really does fail the test. This was verified explicitly rather
   than assumed, because every DuckDB smoke test depends on it.
+
+## 12. Review record
+
+Both reviews were run against this branch, and the findings were fixed in a
+follow-up commit rather than argued away.
+
+### Review A — build correctness
+
+| Check | Result |
+|---|---|
+| Submodule SHAs and release identity | PASS — `git submodule status` on a fresh clone gives `8fdcd99c...` and `069cc9f9...`; `ls-remote` confirms both are the pinned refs, and the release API confirms `v1.5.6` is `Latest`, not a prerelease |
+| xmake / CMake responsibility split | PASS — CMake owns orchestration and imported targets; `xmake.lua` owns compilation; no Sluice source is listed in any CMakeLists |
+| No private headers in the SDK | PASS — installed surface equals the 11 entries of upstream's `EXPECTED_V2_HEADERS` exactly, and the four headers in upstream's `DELETED_HEADERS` (`cancel`, `fiber`, `fiber_ctx`, `stackful_io_host`) are absent from the tree and the prefix |
+| Static link order and dependencies | PASS — link lines read `libsluice_async.a libsluice_core.a -luring`; `ldd` shows `liburing.so.2` for the uring consumer and none for the core consumer |
+| `liburing` never silently stubbed | PASS — configure logs `checking for liburing capability ... ok`, and every failure branch in `xmake/uring.lua` raises |
+| Edit triggers recompile and relink | PASS — see the four-phase table in `docs/build-boundary.md` |
+| No cross-profile cache reuse | PASS — separate `.xmake` per profile, 11 objects each, `nm -u` io_uring symbol counts 0 vs 11 |
+| Clean checkout reproduces the README | PASS — fresh clone, `--depth 1` submodules, `cmake --preset release`, full build 12m32s, 9/9 tests |
+
+Findings raised and fixed:
+
+- **F1** — an absolute `--builddir` was resolved against the project dir when
+  stored but against the invocation CWD when used, so objects landed in
+  `build/build/sluice-work/<profile>/out` while the docs said `<work>/out`.
+  Fixed by passing the relative value `out`.
+- **F2** — the report claimed `git status --porcelain --ignored` was empty in the
+  Sluice submodule. Sluice's own `xmake.lua` regenerates `compile_commands.json`
+  there and its own `.gitignore` ignores it, so the claim was false. Narrowed to
+  "no tracked or untracked changes" and documented.
+- **F3** — the documented pin verification used `git describe`, which cannot work
+  in the `--depth 1` checkout the README tells people to create. The README now
+  verifies by SHA and offers the tag fetch as an optional extra.
+
+### Review B — experimental validity
+
+| Check | Result |
+|---|---|
+| DuckDB Native unmodified | PASS — `git -C third_party/duckdb status --porcelain` empty before and after the full build and all tests |
+| Real official stable release | PASS — tag ref resolved, release metadata agrees |
+| Runners executed, not merely built | PASS — shell returns query results, unittest prints `All tests passed (1 assertion in 1 test case)`, benchmark emits 5 timings and satisfies its `result` clause |
+| I/O DAG matches this release | PASS — every reference spot-checked against v1.5.6 sources: `AsyncExecutionTask::ExecuteTask` (`async_result.cpp`), the `BLOCKED` branch (`physical_table_scan.cpp`), `FileSystem::Read` exact-count-or-throw (`file_system.hpp`), the `pread` loop with EOF-as-exception (`local_file_system.cpp`), `enable_external_file_cache` default `true` (`settings.hpp`), `ReadAheadBuffer` over a `CachingFileHandle` (`thrift_tools.hpp`) |
+| Arms can separate wrapper tax, host tax and Sluice cost | PASS — D1 is the wrapper control, D2 isolates Sluice on an unmodified host, D0' is the host-refactor control that makes D3/D4 attributable |
+| Build smoke not used as performance evidence | PASS — no timing from the benchmark smoke appears as a result anywhere; the report says so explicitly |
+| Synchronous waits not labelled async | PASS — D3/D4 are `REQUIRES_HOST_CHANGE`, and blocking `wait_one()` in a DuckDB worker is called out as unacceptable |
+| Unverifiable capabilities marked, not guessed | PASS — `NOT_YET_DETERMINED` is used only where a prototype is genuinely required to settle the question |
+
+No blocking findings. The two documentation claims that were wrong are the F2
+and F3 items above, both corrected.
