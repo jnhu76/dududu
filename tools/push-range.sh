@@ -132,11 +132,13 @@ parse_push_args() {
       if [ "$known" -eq 0 ]; then
         for j in "${withvalue[@]}"; do [ "$arg" = "$j" ] && { known=2; break; }; done
       fi
+      # combined short flags (e.g. -qu, -fu): fine when every letter is a
+      # known value-less option
+      if [ "$known" -eq 0 ] && [[ $arg =~ ^-[qvfntu]+$ ]]; then
+        known=1
+      fi
       case "$arg" in
         --all|--branches|--mirror|--tags|--follow-tags) WIDE=1 ;;
-      esac
-      case "$arg" in
-        *=*) ;;                       # value embedded in the flag
       esac
       if [ "$known" -eq 1 ]; then
         :
@@ -278,7 +280,7 @@ resolve_ranges() {
       return 0
     fi
     if [ "$WIDE" -eq 1 ]; then
-      note "mode=wide remote=$REMOTE (multi-ref push: every local commit not on $REMOTE is validated)"
+      note "mode=wide remote=$REMOTE (unrecognized or multi-ref push: every local commit not on $REMOTE is validated)"
       wide_ranges_validated=1
       local line
       while IFS= read -r line; do
