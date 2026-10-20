@@ -1,0 +1,87 @@
+# dududu local verification gates — Lefthook (R0.1).
+#
+# Role split (docs/development/commit-convention.md):
+#   - These hooks are the LOCAL REJECTION layer. They only check: no
+#     formatting, no auto-fixing, no re-staging, no amending, no commits,
+#     no network access.
+#   - GitHub Actions (.github/workflows/repo-policy.yml) only checks
+#     repository policy (PR title + checker self-test). It is a policy
+#     verdict, never a build or correctness verdict: local-first means the
+#     developer's machine produces the build and test evidence.
+#
+# `piped: true` keeps the pre-push steps sequential (shared SDK staging must
+# never be mutated concurrently) and stops at the first red check, cheapest
+# first.
+#
+# Canonical manual entrypoint (forces every glob to the full tree, so a
+# manual run always executes the complete gate — the native push-file list
+# can be empty on a fully pushed branch, which would be a vacuous pass):
+#
+#     lefthook run pre-push --all-files
+
+min_version: 2.1.16
+
+commit-msg:
+  commands:
+    commit-convention:
+      # {1} is the commit-message file. Comment lines ('#') are stripped by
+      # the checker exactly like git strips them after the hook; an illegal
+      # header blocks the commit and nothing is ever rewritten.
+      run: bash tools/check-commit.sh --file {1} --label "commit message"
+
+pre-commit:
+  commands:
+    whitespace:
+      # Staged whitespace errors only. Deliberately nothing else: no
+      # formatting, no git add, no amend.
+      run: git diff --cached --check
+
+pre-push:
+  piped: true
+  commands:
+    commit-checker-selftest:
+      # The checker must refute itself before it is trusted with the push.
+      priority: 1
+      run: bash tools/check-commit.sh --self-test
+
+    push-commit-range:
+      # Validate every commit this push would publish. lefthook does not
+      # forward the pre-push ref lines, so tools/push-range.sh rebuilds the
+      # pushed set from the git push command line and git state; it fails
+      # hard when the range cannot be determined. {1} is the remote name on
+      # real pushes and empty on manual runs.
+      priority: 2
+      run: bash tools/push-range.sh validate {1}
+
+    push-whitespace:
+      # Whitespace errors inside the pushed commits (not the working tree).
+      priority: 3
+      run: bash tools/push-range.sh whitespace {1}
+
+    sluice-gate:
+      # Fast local build + CTest gate (Sluice SDK profile only). Never builds
+      # DuckDB, never downloads, never benchmarks. Serial CTest because
+      # sluice.sdk.install-wipe mutates the shared staging tree; RUN_SERIAL
+      # on that test is the second layer (tests/CMakeLists.txt).
+      #
+      # Path-awareness: any build definition, C++ source, test, hook,
+      # checker or submodule gitlink triggers the gate; a docs-only push
+      # skips the compile but still runs the three checks above.
+      priority: 4
+      glob:
+        - "CMakeLists.txt"
+        - "CMakePresets.json"
+        - "cmake/**"
+        - "src/**"
+        - "include/**"
+        - "experiments/**"
+        - "tests/**"
+        - "tools/**"
+        - "lefthook.yml"
+        - ".github/workflows/**"
+        - "third_party/sluice"
+        - "third_party/duckdb"
+      run: |
+        cmake --preset sluice-only &&
+        cmake --build build/cmake-sluice --parallel 4 &&
+        ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
