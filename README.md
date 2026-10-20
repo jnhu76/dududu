@@ -129,8 +129,10 @@ root and let all writes land there:
 mkdir -p build/duckdb-bench
 ln -sfn "$PWD/third_party/duckdb/benchmark" build/duckdb-bench/benchmark
 
-./build/duckdb-native/benchmark/benchmark_runner --list | head
-./build/duckdb-native/benchmark/benchmark_runner \
+# the DuckDB build tree is SHA-scoped: one directory per submodule HEAD
+DUCKDB_SHA=$(git -C third_party/duckdb rev-parse HEAD)
+./build/duckdb-native/$DUCKDB_SHA/benchmark/benchmark_runner --list | head
+./build/duckdb-native/$DUCKDB_SHA/benchmark/benchmark_runner \
     'benchmark/tpch/parquet/parquet_projection_direct.benchmark' \
     --root-dir "$PWD/build/duckdb-bench" \
     --out="$PWD/build/duckdb-bench/out.txt"

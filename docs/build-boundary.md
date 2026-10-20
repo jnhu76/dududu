@@ -44,9 +44,9 @@ build/
 ├── sluice-stage/{noliburing,liburing}/    raw xmake install output (staging)
 ├── sluice-sdk/{noliburing,liburing}/      the SDK prefix consumers actually use
 ├── cmake/                                 CMake/Ninja build tree for dududu
-├── duckdb-native/                         upstream DuckDB build tree
+├── duckdb-native/<duckdb-sha>/            upstream DuckDB build tree, one per submodule SHA
 ├── duckdb-bench/                          benchmark root (linked benchmark/, generated data)
-└── ep/                                    ExternalProject stamps and logs
+└── ep/                                    ExternalProject stamps and logs (duckdb/<sha> per generation)
 ```
 
 ## Why each isolation rule exists
@@ -180,3 +180,22 @@ Upstream CMake with upstream options only:
 `CMAKE_POLICY_VERSION_MINIMUM=3.5` restores the floor DuckDB's own
 `cmake_minimum_required(VERSION 3.5...3.29)` declares, which the local CMake 4.x
 otherwise rejects. It changes no source and no semantics.
+
+**SHA-scoped build identity.** The external build is stamp-driven and has no
+dependency on submodule content: with `UPDATE_COMMAND ""` and
+`BUILD_ALWAYS FALSE`, updating the submodule left the previous release running
+while every build looked green (reproduced in review B2 — source identity moved
+A→B, the consumed binary still reported A; the same failure is described in the
+CMake ExternalProject docs for a pre-existing `SOURCE_DIR`). The binary dir,
+the ExternalProject prefix (stamps and logs) and the exported
+`DUDUDU_DUCKDB_SHA` are therefore bound to the submodule's full HEAD SHA at
+configure time, and the submodule's `HEAD`, loose ref and `packed-refs` are
+registered in `CMAKE_CONFIGURE_DEPENDS`. The next `cmake --build` after a
+gitlink move re-runs CMake, resolves the new SHA and builds from scratch into
+the new SHA's directory — the old tree is never reused. Consumers resolve all
+paths through the exported `DUDUDU_DUCKDB_BIN_DIR`; a literal path anywhere
+would silently pin one generation. Previous-generation trees remain under
+`build/duckdb-native/` (ignored, deletable) so the binary behind an already
+recorded result stays identifiable. Proven by `duckdb.build.sha-refresh`, which
+drives the real `cmake/DuckDB.cmake` against a stub git-repository source and
+covers both move shapes (branch commit and detached HEAD).

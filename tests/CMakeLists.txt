@@ -1,6 +1,11 @@
 # Consumer smoke tests over the installed Sluice SDK, plus official DuckDB
 # smoke entry points. Every test here consumes installed artifacts or upstream
 # binaries; none of them reaches into a submodule source tree.
+#
+# The build-mechanics block at the bottom is different: those tests replay the
+# bridge mechanisms against fixtures so that a stale-binary or stale-SDK
+# regression fails as a red CTest instead of silently invalidating an
+# experiment (review B2).
 
 set(DUDUDU_SLUICE_SDK_NOLIBURING "${DUDUDU_BUILD_ROOT}/sluice-sdk/noliburing")
 set(DUDUDU_SLUICE_SDK_LIBURING "${DUDUDU_BUILD_ROOT}/sluice-sdk/liburing")
@@ -33,7 +38,9 @@ add_test(NAME sluice.sdk.header-boundary
 
 # --- DuckDB official entry points ------------------------------------------
 if(TARGET duckdb_native)
-  set(DUDUDU_DUCKDB_BIN_DIR "${DUDUDU_BUILD_ROOT}/duckdb-native")
+  # DUDUDU_DUCKDB_BIN_DIR is exported by cmake/DuckDB.cmake and is
+  # SHA-scoped: a submodule update builds into a new directory and this path
+  # moves with it. Never recompute a literal path here.
   set(DUDUDU_DUCKDB_SHELL "${DUDUDU_DUCKDB_BIN_DIR}/duckdb")
   set(DUDUDU_DUCKDB_UNITTEST "${DUDUDU_DUCKDB_BIN_DIR}/test/unittest")
   set(DUDUDU_DUCKDB_BENCHMARK "${DUDUDU_DUCKDB_BIN_DIR}/benchmark/benchmark_runner")
@@ -71,3 +78,14 @@ if(TARGET duckdb_native)
   # entry-point evidence, not part of the fast loop.
   set_tests_properties(duckdb.benchmark.smoke PROPERTIES LABELS "slow" TIMEOUT 1800)
 endif()
+
+# --- Build-mechanics negative proofs ----------------------------------------
+# Replays the DuckDB bridge against a stub git-repository source: after any
+# gitlink move (branch or detached), the consumed binary must come from the
+# new SHA's fresh build tree, never from the previous generation. Runs the
+# real cmake/DuckDB.cmake; no upstream source or network involved.
+add_test(NAME duckdb.build.sha-refresh
+         COMMAND ${CMAKE_COMMAND}
+                 "-DFIXTURE_ROOT=${CMAKE_BINARY_DIR}/fixture/duckdb-sha-refresh"
+                 "-DDUDUDU_CMAKE_DIR=${CMAKE_SOURCE_DIR}/cmake"
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunDuckdbShaRefreshFixture.cmake)
