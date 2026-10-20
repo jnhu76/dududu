@@ -13,7 +13,7 @@
 # never be mutated concurrently) and stops at the first red check, cheapest
 # first.
 #
-# Why every command sets `files:` and references `{files}` in a trailing
+# Why every push command sets `files:` and references `{files}` in a trailing
 # shell comment: lefthook derives pre-push "push files" from the CURRENT
 # branch only. When that branch has nothing unpushed — `git push
 # origin other-branch`, `git push --all`, force pushes of another ref — the
@@ -29,10 +29,16 @@
 # tools/push-range.sh from the commit ranges the push really carries, never
 # from lefthook's current-branch heuristic.
 #
-# The remote name is not passed as {1}: an empty placeholder would make
-# manual runs look like "no files for inspection", and push-range.sh
-# recovers the remote from the `git push` command line (or Git's
-# default-remote config) itself, defaulting to origin.
+# Why `use_stdin: true`: Git writes the refs it will publish to the pre-push
+# hook's stdin (`<local ref> <local sha> <remote ref> <remote sha>`). lefthook
+# 2.1.16 reads that stream for its own bookkeeping but replays it, intact, to
+# every command with `use_stdin: true` (verified with three sequential
+# commands). tools/push-range.sh therefore validates exactly the SHAs Git
+# reports: options, configured refspecs, wildcards, negative and matching
+# refspecs, --all and --mirror are all resolved by Git, not re-implemented
+# here. `{1}` expands to the remote name in a real push and stays literal
+# (`{1}`) in a manual `lefthook run pre-push`, which selects manual mode
+# (current branch or --range).
 #
 # Canonical manual entrypoint (invokes every pre-push command; the build step
 # still decides from the paths the resolved ranges touch, so a docs-only run
@@ -75,19 +81,20 @@ pre-push:
       run: 'bash tools/check-commit.sh --self-test  # gate sentinel: {files}'
 
     push-commit-range:
-      # Validate every commit this push would publish. lefthook does not
-      # forward the pre-push ref lines, so tools/push-range.sh rebuilds the
-      # pushed set from the git push command line and git state; it fails
-      # hard when the range cannot be determined.
+      # Validate every commit this push actually publishes. The ref/SHA lines
+      # come from Git through stdin; an empty stream means nothing is being
+      # published, and malformed data is a hard failure.
       priority: 2
+      use_stdin: true
       files: printf '%s\n' lefthook.yml
-      run: 'bash tools/push-range.sh validate  # gate sentinel: {files}'
+      run: 'DUDUDU_PRE_PUSH_REMOTE="{1}" bash tools/push-range.sh validate  # gate sentinel: {files}'
 
     push-whitespace:
       # Whitespace errors inside the pushed commits (not the working tree).
       priority: 3
+      use_stdin: true
       files: printf '%s\n' lefthook.yml
-      run: 'bash tools/push-range.sh whitespace  # gate sentinel: {files}'
+      run: 'DUDUDU_PRE_PUSH_REMOTE="{1}" bash tools/push-range.sh whitespace  # gate sentinel: {files}'
 
     sluice-gate:
       # Fast local build + CTest gate (Sluice SDK profile only). Never builds
@@ -102,11 +109,12 @@ pre-push:
       # silent skip. DUDUDU_FORCE_BUILD_GATE=1 forces the build step for the
       # manual full gate.
       priority: 4
+      use_stdin: true
       files: printf '%s\n' lefthook.yml
       run: |
         # gate sentinel: {files}
         rc=0
-        bash tools/push-range.sh relevant || rc=$?
+        DUDUDU_PRE_PUSH_REMOTE="{1}" bash tools/push-range.sh relevant || rc=$?
         case "$rc" in
           0)
             cmake --preset sluice-only &&
