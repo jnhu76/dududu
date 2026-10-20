@@ -113,12 +113,6 @@ new_repo() {
   printf '%s' "$dir"
 }
 
-# verbatim_commit <repo> <message-file>: create an empty commit whose raw
-# message is exactly the file's bytes (no cleanup, no comment stripping).
-verbatim_commit() {
-  git -C "$1" commit -q --allow-empty --cleanup=verbatim -F "$2"
-}
-
 write_msg() { printf '%s' "$2" > "$1"; }
 
 # =============================================================================
@@ -169,6 +163,10 @@ expect_fail_like "msg: forbidden scope d0"       "scope"   --message "docs(d0): 
 expect_fail_like "msg: forbidden scope phase-1"  "scope"   --message "docs(phase-1): add thing"
 expect_fail_like "msg: forbidden scope stage-2"  "scope"   --message "chore(stage-2): add thing"
 expect_fail_like "msg: forbidden scope round-3"  "scope"   --message "test(round-3): add thing"
+expect_fail_like "msg: forbidden scope phase1"   "scope"   --message "docs(phase1): add thing"
+expect_fail_like "msg: forbidden scope stage0"   "scope"   --message "chore(stage0): add thing"
+expect_fail_like "msg: forbidden scope r0a"      "scope"   --message "feat(r0a): add thing"
+expect_fail_like "msg: forbidden scope r-0"      "scope"   --message "feat(r-0): add thing"
 expect_fail_like "msg: uppercase scope"     "scope"        --message "feat(Repo): add thing"
 expect_fail_like "msg: underscore scope"    "scope"        --message "feat(native_wrapper): add thing"
 expect_fail_like "msg: leading hyphen scope"   "scope"     --message "feat(-repo): add thing"
@@ -192,7 +190,8 @@ expect_fail_like "msg: valid decoy in body cannot rescue bad header" "type|allow
 expect_fail_like "msg: valid decoy cannot rescue trailing period" "period|subject" \
   --message "$(printf 'feat(repo): bad period.\nfeat(repo): decoy')"
 expect_fail_like "msg: control character"   "text|control" --message "$(printf 'feat(repo): add \x01 thing')"
-expect_fail_like "msg: carriage return"     "carriage|whitespace" --message "$(printf 'feat(repo): add thing\r')"
+expect_fail_like "msg: trailing carriage return" "carriage|whitespace" --message "$(printf 'feat(repo): add thing\r')"
+expect_fail_like "msg: embedded carriage return" "carriage" --message "$(printf 'feat(repo): add a\rcarriage return inside')"
 expect_fail_like "msg: label appears in diagnostics" "PR title" --label "PR title" --message "feat: no scope"
 
 # =============================================================================
@@ -217,6 +216,11 @@ write_msg "$tmpdir/leading-blank.msg" \
 chore(repo): configure lefthook
 "
 expect_pass "file: leading blank line tolerated" --file "$tmpdir/leading-blank.msg"
+
+# whitespace-only leading line generated programmatically: the suite itself
+# must stay free of trailing whitespace for the pre-commit gate
+printf '   \nchore(repo): configure lefthook\n' > "$tmpdir/leading-whitespace.msg"
+expect_pass "file: whitespace-only leading line tolerated" --file "$tmpdir/leading-whitespace.msg"
 
 write_msg "$tmpdir/invalid-first-line.msg" \
 "# comment
@@ -306,6 +310,14 @@ expect_fail_like "range: nonexistent full sha base" "cannot resolve|unknown revi
 
 # range diagnostics name the offending range
 expect_fail_like "range: diagnostics name the range" "main~2\.\.main" --range main~2 main
+
+# git-generated merge messages are exempt only while MERGE_HEAD exists
+write_msg "$tmpdir/merge.msg" "Merge branch 'side' into main
+"
+scratch rev-parse HEAD > "$TEST_CWD/.git/MERGE_HEAD"
+expect_pass "file: git-generated merge message accepted during a merge" --file "$tmpdir/merge.msg"
+rm -f "$TEST_CWD/.git/MERGE_HEAD"
+expect_fail_like "file: merge-looking message rejected without a merge in progress" "expected '<type>" --file "$tmpdir/merge.msg"
 
 # usage errors
 expect_fail "usage: no arguments"

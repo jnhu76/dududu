@@ -35,15 +35,12 @@ readonly HEADER_MAX=72
 readonly HEADER_RE='^(feat|fix|perf|refactor|test|build|ci|docs|chore|revert)\(([a-z0-9]+(-[a-z0-9]+)*)\)(!)?: (.+)$'
 readonly ALLOWED_TYPES="feat fix perf refactor test build ci docs chore revert"
 
-# Roadmap/project-management labels are not responsibility domains.
+# Roadmap/project-management labels are not responsibility domains. The
+# families match with or without a numeric/hyphen suffix (r0, r0a, r-0, d2,
+# phase1, phase-1, stage0, round-3, step-1, sprint-x, milestone-y).
 readonly FORBIDDEN_SCOPE_RES=(
-  '^[rd][0-9]+$'          # r0, d2, d0, ...
-  '^phase(-.+)?$'
-  '^stage(-.+)?$'
-  '^round(-.+)?$'
-  '^step(-.+)?$'
-  '^milestone(-.+)?$'
-  '^sprint(-.+)?$'
+  '^[rd]-?[0-9]+[a-z]?$'
+  '^(phase|stage|round|step|milestone|sprint)([-0-9].*)?$'
 )
 
 # usage: validate_header <header> — appends human-readable errors to the
@@ -64,8 +61,8 @@ validate_header() {
   if [[ $header == [[:space:]]* ]]; then
     ERRORS+=("header starts with whitespace")
   fi
-  if [[ $header == *$'\r' ]]; then
-    ERRORS+=("header ends with a carriage return (CRLF line endings? use LF)")
+  if [[ $header == *$'\r'* ]]; then
+    ERRORS+=("header contains a carriage return (CRLF line endings? use LF)")
   fi
   if [[ $header =~ [[:space:]]$ ]]; then
     ERRORS+=("header ends with whitespace")
@@ -76,12 +73,11 @@ validate_header() {
     ERRORS+=("header is ${#header} characters; maximum is $HEADER_MAX")
   fi
 
-  local type scope subject
+  local scope subject
   if [[ ! $stripped =~ $HEADER_RE ]]; then
     ERRORS+=("expected '<type>(<scope>): <subject>' or '<type>(<scope>)!: <subject>'; allowed types: $ALLOWED_TYPES")
     return
   fi
-  type="${BASH_REMATCH[1]}"
   scope="${BASH_REMATCH[2]}"
   subject="${BASH_REMATCH[5]}"
 
@@ -103,7 +99,8 @@ validate_header() {
 
 # usage: validate_text_bytes <string> — appends an error when the string
 # carries control characters other than TAB/LF/CR. wc -c is used because
-# command substitution silently drops NUL bytes.
+# command substitution silently drops NUL bytes. (CR inside the header is
+# rejected separately; CR is allowed here for body line endings.)
 validate_text_bytes() {
   local rest
   rest="$(printf '%s' "$1" | LC_ALL=C tr -d '\11\12\15\40-\176\200-\377' | LC_ALL=C wc -c)"
@@ -112,20 +109,18 @@ validate_text_bytes() {
   fi
 }
 
-# usage: header_of <content> — skips leading blank lines, prints the first
-# remaining line, sets HAS_CONTENT=0/1. Handles content without a trailing
-# newline (`read` still yields the final partial line).
-HAS_CONTENT=1
+# usage: header_of <content> — skips leading blank AND whitespace-only lines
+# (neither carries a header), prints the first remaining line verbatim.
+# Handles content without a trailing newline (`read` still yields the final
+# partial line).
 header_of() {
   local content="$1" line
-  HAS_CONTENT=1
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ -n "$line" ]; then
+    if [ -n "${line//[[:space:]]/}" ]; then
       printf '%s' "$line"
       return
     fi
   done <<< "$content"
-  HAS_CONTENT=0
   printf ''
 }
 
@@ -172,6 +167,19 @@ check_file() {
     [[ $line == '#'* ]] && continue
     filtered+="$line"$'\n'
   done < "$path"
+
+  # A merge in progress: git generates 'Merge ...' itself and the user cannot
+  # make it conventional without rewriting it. --range skips merge commits
+  # with an explicit SKIP line; the commit-msg hook does the same, but only
+  # for git's generated wording (anything the author rewrote is validated).
+  local merge_head header
+  merge_head="$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || true)"
+  header="$(header_of "$filtered")"
+  if [ -n "$merge_head" ] && [ -f "$merge_head" ] && [[ $header == Merge\ * ]]; then
+    printf 'PASS: %s: git-generated merge message accepted without policy (merge commits are exempt, see docs/development/commit-convention.md)\n' "$label"
+    return 0
+  fi
+
   check_message "$filtered" "$label"
 }
 
@@ -264,8 +272,12 @@ self_test() {
     "feat(r0): add thing"
     "feat(d2): add thing"
     "feat(r1): add thing"
+    "feat(r0a): add thing"
+    "feat(r-0): add thing"
     "docs(phase-1): add thing"
+    "docs(phase1): add thing"
     "chore(stage-2): add thing"
+    "chore(stage0): add thing"
     "test(round-3): add thing"
     "feat(Repo): add thing"
     "feat(native_wrapper): add thing"
@@ -287,6 +299,7 @@ self_test() {
     "$(printf 'feat(repo): bad period.\nfeat(repo): decoy')"
     "$(printf 'feat(repo): add \x01 thing')"
     "$(printf 'feat(repo): add thing\r')"
+    "$(printf 'feat(repo): add a\rcarriage return inside')"
   )
 
   local failures=0 m
@@ -347,10 +360,10 @@ RANGE_HEAD=""
 LABEL="message"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --message) [ $# -ge 2 ] || { usage; exit 2; }; MODE=message; MSG_VALUE="$2"; shift 2 ;;
-    --file)    [ $# -ge 2 ] || { usage; exit 2; }; MODE=file; FILE_VALUE="$2"; shift 2 ;;
-    --range)   [ $# -ge 3 ] || { usage; exit 2; }; MODE=range; RANGE_BASE="$2"; RANGE_HEAD="$3"; shift 3 ;;
-    --self-test) MODE=self-test; shift ;;
+    --message) [ $# -ge 2 ] || { usage; exit 2; }; MODE="message"; MSG_VALUE="$2"; shift 2 ;;
+    --file)    [ $# -ge 2 ] || { usage; exit 2; }; MODE="file"; FILE_VALUE="$2"; shift 2 ;;
+    --range)   [ $# -ge 3 ] || { usage; exit 2; }; MODE="range"; RANGE_BASE="$2"; RANGE_HEAD="$3"; shift 3 ;;
+    --self-test) MODE="self-test"; shift ;;
     --label)   [ $# -ge 2 ] || { usage; exit 2; }; LABEL="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'ERROR: unknown argument: %s\n' "$1" >&2; usage; exit 2 ;;
