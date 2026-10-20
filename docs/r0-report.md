@@ -208,6 +208,9 @@ not.
 
 - **No arm exists yet.** D1–D4 are R1/R2. There is no adapter, no wrapper, no
   Sluice-backed FileSystem.
+- `build/duckdb-native/` now accumulates one directory per DuckDB SHA the
+  checkout has ever built (~170 MB each). They are ignored, deletable, and kept
+  by default so the binary behind a recorded result stays identifiable.
 - **No performance number is claimed.** The benchmark smoke is entry-point
   evidence with a correctness oracle attached. Five timings of one TPC-H parquet
   query on one machine are not a result.
@@ -261,8 +264,9 @@ in `README.md`.
 
 ## 12. Review record
 
-Both reviews were run against this branch, and the findings were fixed in a
-follow-up commit rather than argued away.
+Review passes A and B were run against the original R0 head; B2 (the PR #1
+re-review) against the same code, independently. Findings were fixed in
+follow-up commits rather than argued away.
 
 ### Review A — build correctness
 
@@ -306,3 +310,25 @@ Findings raised and fixed:
 
 No blocking findings. The two documentation claims that were wrong are the F2
 and F3 items above, both corrected.
+
+### Review B2 — second independent pass (PR #1 re-review)
+
+Verdict was **REVISE**: two P1 findings against build trustworthiness, two P2s,
+one non-blocking note. All fixed in this branch; each P1 was first turned into
+a failing regression test on the unfixed tree, then fixed, then green.
+
+| Finding | Verdict then | Fix and proof |
+|---|---|---|
+| **P1** — a DuckDB submodule update kept the previous release running: the external build is stamp-driven with no dependency on submodule content (`UPDATE_COMMAND ""`, `BUILD_ALWAYS FALSE`) | reproduced on the real bridge (source identity A→B, `cmake --build`, binary still A) | binary dir, ExternalProject prefix and exported `DUDUDU_DUCKDB_SHA` bound to the submodule HEAD SHA; `CMAKE_CONFIGURE_DEPENDS` watches the submodule's `HEAD`/loose ref/`packed-refs` so the next `cmake --build` re-runs CMake and builds fresh into the new SHA's directory. `duckdb.build.sha-refresh` drives the real `cmake/DuckDB.cmake` against a stub git source: red before the fix, green after, both move shapes (branch commit, detached HEAD) |
+| **P1-2** — the Sluice staging tree was never cleaned, so a header dropped by a future Sluice would survive in staging and ride SyncSdk's copy into the SDK, past the prefix-side prune | confirmed by reading the chain (stage glob → copy → prune only sees stage-absent files) | install step wipes staging before `xmake install`; `sluice.sdk.install-wipe` plants a rogue file in the real staging tree and proves it vanishes from stage and SDK (red before the fix); `sluice.sdk.stale-sync` pins the sync contract hermetically: shrink removes, unchanged keeps mtime, changed updates |
+| **P2** — `CMakePresets.json` did not pin a generator | confirmed | `"generator": "Ninja"` on the base preset |
+| **P2** — the header-boundary check ran only on the `noliburing` prefix | confirmed | now runs on both profiles (`sluice.sdk.header-boundary.noliburing`, renamed from `sluice.sdk.header-boundary`, and `sluice.sdk.header-boundary.liburing`); neither profile is inferred from the other |
+| non-blocking — `release` and `sluice-only` share `DUDUDU_BUILD_ROOT` | confirmed | documented as serialize-or-isolate in `docs/build-boundary.md`; no code change while builds stay serial |
+
+The negative-proof test suite lives in `tests/cmake/` and is registered under
+the "Build-mechanics negative proofs" block: these tests replay the bridge
+mechanisms against fixtures (and, for the install wipe, against the real xmake
+chain) so the failure mode shows up as a red CTest rather than as silently
+invalidated evidence. The suite is now 13 tests; the full matrix was re-run
+green after the fixes, including the DuckDB entry points against a fresh
+SHA-scoped build of the pinned v1.5.6 source.
