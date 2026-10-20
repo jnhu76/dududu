@@ -186,12 +186,14 @@ the one accepted `LEFTHOOK=0 git push ...` case.
   so `tools/push-range.sh` reconstructs the pushed set from the `git push`
   command line and git state, and FAILS when it cannot. It understands git
   global options (`git -c ... push`, `git -C path push`), explicit and
-  wildcard refspecs, negative exclusions, and `remote.<name>.push` recipes
-  (including command-line `-c` overrides). An unparseable push is a hard
-  failure, never a fallback to the current branch. The alternative —
+  wildcard refspecs (`*` crosses `/`, exactly like Git), negative exclusions,
+  `remote.<name>.push` recipes (including command-line `-c` overrides), and
+  mirror pushes (`--mirror` or `remote.<name>.mirror`), which validate every
+  ref namespace instead of only branches and tags. An unparseable push is a
+  hard failure, never a fallback to the current branch. The alternative —
   validating a hardcoded range like `origin/main..HEAD` and going green —
-  would silently miss force-pushes, multi-ref pushes, configured refspecs and
-  missing-baseline pushes.
+  would silently miss force-pushes, multi-ref pushes, configured refspecs,
+  mirror namespaces and missing-baseline pushes.
 
 The governing principle:
 

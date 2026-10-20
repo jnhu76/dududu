@@ -22,9 +22,12 @@
 #      based on @{push}, the remote-tracking ref, and/or the merge-base with
 #      <remote>/main, folded to the deepest common ancestor (a conservative
 #      superset).
-#   4. wide mode — `--all/--mirror/--tags/--follow-tags` or
-#      push.default=matching: every local non-merge commit not known to be on
-#      the remote is validated one by one.
+#   4. wide/mirror mode — `--all/--tags/--follow-tags`,
+#      push.default=matching, `--mirror`, or remote.<name>.mirror: every
+#      local non-merge commit not known to be on the remote is validated one
+#      by one. Mirror enumerates every ref namespace (notes, replace, deploy,
+#      remote-tracking), not just branches and tags; wildcard refspec '*' also
+#      crosses '/' exactly like Git's refspec matcher.
 #
 # A push command line this script cannot parse is a hard failure. Falling
 # back to the current branch in that situation is exactly the fail-open bug
@@ -222,6 +225,7 @@ find_push_args() {
 parse_push_args() {
   SPECS=()
   WIDE=0
+  MIRROR=0
   DELETE_ONLY=0
   SPECS_RELIABLE=1
   REMOTE_EXPLICIT=0
@@ -231,9 +235,9 @@ parse_push_args() {
     -t --thin --no-thin -d --delete --no-verify --verify --force-with-lease
     --force-if-includes --no-force-if-includes --signed --no-signed
     --prune --no-prune --progress --no-progress --no-recurse-submodules
-    --recurse-submodules -4 --ipv4 -6 --ipv6
+    -4 --ipv4 -6 --ipv6
   )
-  local -a withvalue=( -o --push-option --receive-pack --exec --repo --server-option )
+  local -a withvalue=( -o --push-option --receive-pack --exec --repo --server-option --recurse-submodules )
   local arg seen_remote=0 end_options=0 i j known tagprefix
   for ((i = 0; i < ${#PUSH_ARGS[@]}; i++)); do
     arg="${PUSH_ARGS[$i]}"
@@ -264,7 +268,8 @@ parse_push_args() {
         known=3
       fi
       case "$arg" in
-        --all|--branches|--branches=*|--mirror|--tags|--follow-tags) WIDE=1 ;;
+        --all|--branches|--branches=*|--tags|--follow-tags) WIDE=1 ;;
+        --mirror) WIDE=1; MIRROR=1 ;;
         -d|--delete) DELETE_ONLY=1 ;;
       esac
       if [ "$arg" = "--repo" ]; then
@@ -340,6 +345,18 @@ cfg_get_all() {
       [ "${entry%%=*}" = "$key" ] && printf '%s\n' "${entry#*=}"
     done
   )
+}
+
+# cfg_get_bool <key>: 0 when the key is set to true or to an unrecognized
+# value (conservative: force the wider validation), 1 when unset or
+# explicitly false.
+cfg_get_bool() {
+  local key="$1" value
+  value="$(cfg_get "$key")" || return 1
+  case "${value,,}" in
+    0|false|no|off) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 remote_is_configured() {
@@ -442,26 +459,33 @@ refspec_range() {
   printf '%s %s' "$base" "$sha"
 }
 
+# ref_matches_pattern <ref> <pattern>: Git refspec wildcard semantics. The
+# single '*' crosses '/' (unlike for-each-ref's FNM_PATHNAME patterns), and
+# '?'/'[]' are ordinary characters. Returns 0 match, 1 no match, 2 pattern
+# with more than one '*' (outside the grammar this script resolves).
+ref_matches_pattern() {
+  local ref="$1" pat="$2" prefix suffix
+  case "$pat" in
+    *'*'*)
+      prefix="${pat%%\**}"
+      suffix="${pat#*\*}"
+      [[ $suffix == *'*'* ]] && return 2
+      [[ $ref == "$prefix"*"$suffix" ]]
+      ;;
+    *) [ "$ref" = "$pat" ] ;;
+  esac
+}
+
 # Negative push refspecs (^pattern) exclude refs from a wildcard push.
 NEGATIVE_PATTERNS=()
 is_negative_ref() {
-  local ref="$1" pat prefix suffix
+  local ref="$1" pat rc=1
   for pat in "${NEGATIVE_PATTERNS[@]}"; do
-    case "$pat" in
-      *'*'*)
-        prefix="${pat%%\**}"
-        suffix="${pat#*\*}"
-        # RefSpec wildcards are a single literal '*'; '?' and '[]' are
-        # ordinary characters. Treating them as globs could exclude a ref
-        # Git actually pushes (under-validation). More than one '*' cannot
-        # be reproduced, so do not exclude it either.
-        [[ $suffix == *'*'* ]] && continue
-        [[ $ref == "$prefix"*"$suffix" ]] && return 0
-        ;;
-      *)
-        [ "$ref" = "$pat" ] && return 0
-        ;;
-    esac
+    ref_matches_pattern "$ref" "$pat"
+    rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    # rc=2 (multiple '*') is not excluded: validating an extra ref is safe,
+    # while guessing the exclusion could under-validate a published ref.
   done
   return 1
 }
@@ -491,13 +515,19 @@ append_refspec_ranges() {
     if [[ $dst != *'*'* ]]; then
       die "refspec '$1': wildcard source without a wildcard destination"
     fi
+    if [[ ${src#*\*} == *'*'* ]]; then
+      die "refspec '$1': more than one wildcard is not supported; cannot resolve the published refs"
+    fi
     prefix="${src%%\**}"
     suffix="${src#*\*}"
-    if ! refs="$(git for-each-ref --format='%(refname)' "$src")"; then
-      die "cannot expand wildcard refspec '$1'"
+    # Enumerate every ref and apply refspec matching here: for-each-ref's
+    # own pattern matching does not let '*' cross '/', while a refspec '*' does.
+    if ! refs="$(git for-each-ref --format='%(refname)')"; then
+      die "cannot enumerate local refs for wildcard refspec '$1'"
     fi
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
+      ref_matches_pattern "$ref" "$src" || continue
       is_negative_ref "$ref" && continue
       mid="${ref#"$prefix"}"
       if [ -n "$suffix" ]; then
@@ -554,9 +584,16 @@ current_branch_range() {
 # "refs/remotes/<name>/*" argument would not be expanded and would silently
 # yield an empty set. Returns 1 (the caller must fail) when rev-list fails.
 collect_wide() {
-  local sha parent commits
-  if ! commits="$(git rev-list --reverse --no-merges --branches --tags \
-                    --not --remotes="$REMOTE")"; then
+  local mode="${1:-wide}" sha parent commits
+  if [ "$mode" = "mirror" ]; then
+    # --mirror publishes every ref under refs/ (notes, replace, deploy
+    # namespaces, remote-tracking refs), not just branches and tags.
+    if ! commits="$(git rev-list --reverse --no-merges --all \
+                      --not --remotes="$REMOTE")"; then
+      return 1
+    fi
+  elif ! commits="$(git rev-list --reverse --no-merges --branches --tags \
+                      --not --remotes="$REMOTE")"; then
     return 1
   fi
   while IFS= read -r sha; do
@@ -570,12 +607,12 @@ collect_wide() {
 }
 
 resolve_wide() {
-  local reason="$1"
-  note "mode=wide remote=$REMOTE ($reason)"
+  local reason="$1" mode="${2:-wide}"
+  note "mode=$mode remote=$REMOTE ($reason)"
   ROOTS=()
-  if ! collect_wide; then
-    # Never fail open: an unresolved wide push must be red.
-    die "wide push: cannot determine the local-only commit set"
+  if ! collect_wide "$mode"; then
+    # Never fail open: an unresolved wide/mirror push must be red.
+    die "$mode push: cannot determine the local-only commit set"
   fi
   if [ "${#RANGES[@]}" -eq 0 ] && [ "${#ROOTS[@]}" -eq 0 ]; then
     note "NO_NEW_COMMITS: nothing local is missing from $REMOTE"
@@ -605,6 +642,15 @@ resolve_ranges() {
     fi
     if [ "$REMOTE_EXPLICIT" -eq 0 ]; then
       resolve_default_remote
+    fi
+
+    # Command-line --mirror and remote.<name>.mirror both publish every local
+    # ref (Git rejects refspecs combined with mirror). Check this before the
+    # deletion/wide/spec paths, otherwise a bare mirror push falls back to the
+    # current branch and can publish unrelated refs green.
+    if [ "$MIRROR" -eq 1 ] || cfg_get_bool "remote.$REMOTE.mirror"; then
+      resolve_wide "mirror push: every local ref not on $REMOTE is validated" mirror
+      return 0
     fi
 
     if [ "$DELETE_ONLY" -eq 1 ]; then

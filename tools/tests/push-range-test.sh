@@ -370,8 +370,53 @@ expect_ok_like "negative refspec excludes the invalid branch from the wildcard" 
 expect_remote_has "negative refspec still publishes the valid branch" refs/heads/wildok
 expect_remote_lacks "negative refspec does not publish the excluded branch" refs/heads/wildbad
 
+# A refspec '*' crosses '/' (for-each-ref's own globs do not). Only the
+# slash-named branch is invalid, so a resolver that misses it goes green.
+git -C "$WORK" checkout -qb slashok main
+commit_empty "docs(repo): slash wildcard valid content"
+git -C "$WORK" branch slash/bad "$(git -C "$WORK" rev-parse cfgpoison)"
+git -C "$WORK" checkout -q main
+run_push origin 'refs/heads/slash*:refs/heads/slash*'
+expect_fail_like "wildcard '*' crosses '/' like Git refspecs" "expected '<type"
+expect_remote_lacks "slash-crossing wildcard publishes no invalid ref" refs/heads/slash/bad
+expect_remote_lacks "slash-crossing wildcard publishes no valid ref on rejection" refs/heads/slashok
+
 # =============================================================================
-# 16. Path-aware build trigger (P2): benchmark sources count, docs do not;
+# 16. Mirror pushes validate every local ref namespace, not just heads/tags.
+# =============================================================================
+invalid_ref_sha="$(git -C "$WORK" rev-parse cfgpoison)"
+git -C "$WORK" update-ref refs/deploy/invalid "$invalid_ref_sha"
+git -C "$WORK" branch -qD optpoison cfgpoison wildbad widebad slash/bad
+mirror_before="$(git --git-dir="$REMOTE" rev-parse refs/heads/main)"
+run_push --mirror origin
+expect_fail_like "mirror push validates refs outside branches and tags" "expected '<type"
+expect_remote_lacks "rejected mirror push publishes no deploy ref" refs/deploy/invalid
+git -C "$WORK" config remote.origin.mirror true
+run_push origin
+expect_fail_like "remote.<name>.mirror bare push validates every local ref" "expected '<type"
+expect_remote_lacks "rejected configured mirror publishes no deploy ref" refs/deploy/invalid
+git -C "$WORK" config --unset remote.origin.mirror
+run_git_push_from "$WORK" -c remote.origin.mirror=true push origin
+expect_fail_like "command-line -c remote.<name>.mirror is honored" "expected '<type"
+expect_remote_lacks "rejected -c mirror publishes no deploy ref" refs/deploy/invalid
+if [ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$mirror_before" ]; then
+  report_pass "rejected mirror pushes leave the remote main tip unchanged"
+else
+  report_fail "rejected mirror pushes leave the remote main tip unchanged"
+fi
+
+# =============================================================================
+# 17. Space-separated --recurse-submodules consumes its value (not the remote).
+# =============================================================================
+git -C "$WORK" checkout -qb rsok main
+commit_empty "docs(repo): recurse-submodules option value"
+git -C "$WORK" checkout -q main
+run_git_push_from "$WORK" push --recurse-submodules no origin rsok
+expect_ok_like "space-separated --recurse-submodules consumes its value" "mode=refspec remote=origin specs=rsok"
+expect_remote_has "recurse-submodules push publishes the real target" refs/heads/rsok
+
+# =============================================================================
+# 18. Path-aware build trigger (P2): benchmark sources count, docs do not;
 #     DUDUDU_FORCE_BUILD_GATE=1 forces the build for a docs-only range.
 # =============================================================================
 git -C "$WORK" checkout -qb benchchange main
