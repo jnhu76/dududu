@@ -53,6 +53,17 @@ add_executable(parquet_trace_test tests/parquet_trace.cpp)
 target_link_libraries(parquet_trace_test PRIVATE dududu_parquet)
 add_test(NAME parquet.trace COMMAND parquet_trace_test)
 
-set_tests_properties(parquet.contract parquet.oracle parquet.trace PROPERTIES
+# Protocol-tooling self-test (negative-first Bash + jq). jq is part of the
+# benchmark toolchain already (summarize.sh); a missing jq is a loud
+# configure error, never a silent skip of the evidence gate.
+find_program(DUDUDU_JQ_EXECUTABLE jq)
+if(NOT DUDUDU_JQ_EXECUTABLE)
+  message(FATAL_ERROR "jq not found: the parquet protocol self-test needs it")
+endif()
+add_test(NAME parquet.trace.jsonl
+         COMMAND bash "${CMAKE_SOURCE_DIR}/benchmarks/parquet/tests/validate-trace-test.sh")
+
+set_tests_properties(parquet.contract parquet.oracle parquet.trace parquet.trace.jsonl
+  PROPERTIES
   LABELS "parquet"
   TIMEOUT 600)

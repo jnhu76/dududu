@@ -99,6 +99,11 @@ if [[ "$datasets" == "medium" || "$datasets" == "both" ]]; then
               --arm p1-native --out "$results_dir/trace-medium-t3.jsonl"
     "$tracer" --file "$data_dir/medium-none.parquet" --workload t3_full \
               --arm p2-sluice --out "$results_dir/trace-medium-t3-p2.jsonl"
+    # Structural gate on the captured evidence: every line valid JSONL and
+    # the two arms' request lists identical, checked with jq by a validator
+    # that shares no code with the C++ trace parser.
+    bash benchmarks/parquet/validate-trace.sh \
+        "$results_dir/trace-medium-t3.jsonl" "$results_dir/trace-medium-t3-p2.jsonl"
 fi
 
 # Pass 1: warm the caches (file content + reader code paths). Discarded.
