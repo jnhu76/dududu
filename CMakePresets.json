@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DUDUDU_BUILD_SLUICE_SDK": "ON",
+        "DUDUDU_BUILD_DUCKDB_NATIVE": "ON",
+        "DUDUDU_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "sluice-only",
+      "displayName": "Sluice SDK + consumers only (no DuckDB build)",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/cmake-sluice",
+      "cacheVariables": {
+        "DUDUDU_BUILD_DUCKDB_NATIVE": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "sluice-only",
+      "configurePreset": "sluice-only"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "sluice-only",
+      "configurePreset": "sluice-only",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
