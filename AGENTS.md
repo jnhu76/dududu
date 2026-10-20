@@ -44,3 +44,46 @@ semantics.
 3. `docs/experiment-matrix.md` — admission rules for the arm being touched.
 4. `third_party/sluice/llms.txt` — navigation into Sluice's authority, not a
    substitute for it.
+
+## Commits and pull requests
+
+Every commit and every PR title follows the Conventional Commits dialect
+defined in [`docs/development/commit-convention.md`](docs/development/commit-convention.md):
+
+```text
+<type>(<scope>): <subject>
+```
+
+with `type` ∈ `feat fix perf refactor test build ci docs chore revert`, a
+required kebab-case scope naming a real responsibility (`repo`, `sdk`,
+`cmake`, `duckdb`, `adapter`, `bench`, `oracle` — never phase labels like
+`r0`/`d2`/`phase-1`), and a lowercase subject; header ≤ 72 characters, no
+trailing full stop. One concern per commit (rule 7 above) and a semantic
+header per commit.
+
+Lefthook enforces this locally (`commit-msg`, `pre-commit`, `pre-push` — run
+`lefthook install` once after cloning). Do not bypass with `--no-verify`;
+fix the header instead. CI (`.github/workflows/repo-policy.yml`) checks the
+PR title and nothing else — its **Repository Policy PASS** is a policy
+verdict, never a build or correctness verdict. Never report it as
+`BUILD_PASS` or `CORRECTNESS_PASS`.
+
+## Verification before review
+
+Local-first: hooks are bypassable and CI is policy-only, so the PR author —
+human or coding agent — owns the correctness evidence. Before opening a PR
+for review, run the verification that matches the change scope and record the
+actual commands and results in the PR description:
+
+| Change touches | Minimum local evidence |
+| --- | --- |
+| Docs only (`*.md`, docs/) | `lefthook run pre-push --all-files` (convention checks; the compile gate is skipped for real doc-only pushes) |
+| CMake, SDK bridge, tools, hooks, CI, submodule pins | Sluice-only gate: `cmake --preset sluice-only && cmake --build build/cmake-sluice --parallel 4 && ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1` |
+| DuckDB adapter, experiment interfaces, correctness tests, benchmark oracle | The Sluice-only gate **plus** the DuckDB native build, DuckDB correctness tests (`ctest -R duckdb`), and the benchmark oracle, per `docs/experiment-matrix.md` admission. Performance numbers require the formal experiment admission; nothing here fakes it. |
+
+PR descriptions must state what actually ran and what actually passed. A test
+that was not run is not green, and a hook result may not be described as a
+build result. Tests never use `sleep` as synchronization (rule 5), and the
+gates keep CTest serial (`--parallel 1` plus `RUN_SERIAL` on the
+staging-mutating `sluice.sdk.install-wipe` test) so shared SDK staging is
+never mutated concurrently.
