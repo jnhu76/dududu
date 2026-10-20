@@ -119,7 +119,9 @@ Local (Lefthook, see `lefthook.yml`):
    2. every commit the push actually publishes (`tools/push-range.sh`,
       fed by Git's own pre-push ref/SHA stream through lefthook's
       `use_stdin`; an empty stream is `NO_NEW_COMMITS`, malformed data or an
-      unresolvable object is a hard failure);
+      unresolvable object is a hard failure). A new remote ref validates
+      everything **not** reachable from the immutable pre-policy boundary
+      below — inherited R0 history is grandfathered, new commits are not;
    3. whitespace check over the same commits;
    4. the Sluice-only CMake/CTest gate, only when the push touches build
       files, C++ sources, tests, benchmarks, tools, hooks or submodule
@@ -166,8 +168,25 @@ A push with `--no-verify` is not machine-checked anywhere; CI would still
 reject a non-conforming PR title. Fix headers in place (`git commit
 --amend`, `git rebase -i`) instead of pushing around the gate. A first push
 to a brand-new remote is checked like any other new ref: Git reports a
-zero remote SHA, and the gate validates the full history of the pushed commit
-(roots by message), so no bootstrap bypass is needed.
+zero remote SHA, and the gate validates every commit not reachable from
+the immutable pre-policy boundary, so no bootstrap bypass is needed.
+
+### The pre-policy boundary
+
+Commits that predate this convention are grandfathered, never rewritten and
+never re-judged. `tools/push-range.sh` pins the exemption to one fixed
+commit — the R0 main tip `6e5f5c6db08f5b6780e13d92f357c65cdc865538` — and
+only for the cases where no narrower base is provable (a new remote ref, or
+a remote object absent locally): it validates `<boundary>..<tip>`, i.e.
+exactly the commits that are **not** already reachable from the boundary.
+A branch cut from any pre-policy commit therefore pushes cleanly on its
+first attempt, while a new commit — or a whole unrelated orphan root — is
+still checked, because neither is reachable from the boundary. The boundary
+is deliberately a SHA, not a moving ref such as `origin/main`: a moving
+base would silently exempt whatever main happens to contain at push time.
+If the boundary object is missing locally (e.g. a shallow clone), the gate
+falls back to validating the entire history — a false rejection, never a
+silent pass.
 
 ## Why this design
 
@@ -197,12 +216,14 @@ zero remote SHA, and the gate validates the full history of the pushed commit
   misparsed (global options, configured refspecs, mirror namespaces,
   matching refspecs), so the reconstruction was removed rather than
   extended. Deletions carry a zero local SHA and validate nothing; a new
-  remote ref or an object absent locally falls back to validating the full
-  local history, which is a superset and never a guess. Malformed or
-  unresolvable push data is a hard failure, never a fallback to the current
-  branch. Manual runs have no push stream and check the current branch (or
-  `--range`); that path cannot hide a published ref because it is only used
-  when nothing is being pushed.
+  remote ref or an object absent locally validates everything not reachable
+  from the immutable pre-policy boundary (see above) — the inherited R0
+  history is exempt by reachability from a fixed SHA, not by skipping roots
+  or trusting `origin/main`, so a genuinely new commit or orphan root cannot
+  hide behind the exemption. Malformed or unresolvable push data is a hard
+  failure, never a fallback to the current branch. Manual runs have no push
+  stream and check the current branch (or `--range`); that path cannot hide
+  a published ref because it is only used when nothing is being pushed.
 
 The governing principle:
 

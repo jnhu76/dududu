@@ -36,9 +36,12 @@
 # commands). tools/push-range.sh therefore validates exactly the SHAs Git
 # reports: options, configured refspecs, wildcards, negative and matching
 # refspecs, --all and --mirror are all resolved by Git, not re-implemented
-# here. `{1}` expands to the remote name in a real push and stays literal
-# (`{1}`) in a manual `lefthook run pre-push`, which selects manual mode
-# (current branch or --range).
+# here. A new remote ref validates only commits NOT reachable from the
+# immutable pre-policy boundary pinned inside tools/push-range.sh (the R0
+# main tip), so inherited R0 history is never re-judged while new commits
+# and unrelated roots still are. `{1}` expands to the remote name in a real
+# push and stays literal (`{1}`) in a manual `lefthook run pre-push`, which
+# selects manual mode (current branch or --range).
 #
 # Canonical manual entrypoint (invokes every pre-push command; the build step
 # still decides from the paths the resolved ranges touch, so a docs-only run

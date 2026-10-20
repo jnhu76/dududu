@@ -122,9 +122,12 @@ build files, C++ sources, tests, benchmarks, tools, hooks or submodule
 gitlinks; a docs-only push skips the compile but still runs the convention
 and whitespace checks. The pushed refs come from Git's own pre-push stream
 (the refs it will actually publish, including mirror and matching pushes), so
-the gate never reconstructs them from the command line. Manual run (all hook
-commands; the compile step stays path-dependent, so a skipped CTest is a
-skip, not a pass):
+the gate never reconstructs them from the command line. A new remote ref is
+validated against the immutable pre-policy boundary
+(`6e5f5c6db08f5b6780e13d92f357c65cdc865538`, the R0 main tip): inherited R0
+history is never re-judged, while new commits and unrelated roots still are.
+Manual run (all hook commands; the compile step stays path-dependent, so a
+skipped CTest is a skip, not a pass):
 
 ```bash
 lefthook run pre-push --all-files
