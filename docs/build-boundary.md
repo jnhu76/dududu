@@ -1,0 +1,149 @@
+# Build boundary
+
+Who owns what, and how the three build systems meet without overlapping.
+
+## Ownership
+
+| Layer | Owner | Authority |
+|---|---|---|
+| Sluice library + its xmake build + installed header allowlist | `third_party/sluice` (pinned submodule) | Sluice `docs/explicit-io-contract.md`, `xmake/*.lua`, `scripts/verify_v2_package.py` |
+| DuckDB core semantics + its CMake build + official tests/benchmarks | `third_party/duckdb` (pinned submodule) | the checked-out release source itself |
+| Experiment adapters, build composition, consumers, benchmarks, evidence | `dududu` (this repo) | this repo's `docs/`, `AGENTS.md` |
+
+dududu does **not**:
+
+- re-declare Sluice sources in CMake (no second build definition),
+- patch, fork, or vendor either upstream's source,
+- provide a Python build/experiment orchestrator,
+- introduce Bazel/Meson/Conan/vcpkg.
+
+## Task graph
+
+```
+cmake --build build/cmake --target sluice_core_consumer
+   └── ExternalProject sluice_sdk_noliburing
+         configure: xmake f -P third_party/sluice -m release --liburing=n
+                    --builddir=<work>/out        (CWD = <work>, so .xmake lands there)
+         build:     xmake -y sluice_core && xmake -y sluice_async
+         install:   xmake install -o <stage> sluice_core
+                    xmake install -o <stage> sluice_async      (two calls, verified form)
+         sdk_sync:  SyncSdk.cmake  <stage> -> build/sluice-sdk/noliburing
+   └── imported targets Sluice::core, Sluice::async (+ *_uring variants)
+   └── link consumer with -I<sdk>/include -L<sdk>/lib -lsluice_async -lsluice_core [-luring]
+
+cmake --build build/cmake --target duckdb_native
+   └── ExternalProject duckdb_native
+         upstream CMake + Ninja, unmodified source, upstream options only
+```
+
+Directories (all under the ignored `build/`):
+
+```
+build/
+├── sluice-work/{noliburing,liburing}/     xmake .xmake cache + objects (per profile)
+├── sluice-stage/{noliburing,liburing}/    raw xmake install output (staging)
+├── sluice-sdk/{noliburing,liburing}/      the SDK prefix consumers actually use
+├── cmake/                                 CMake/Ninja build tree for dududu
+├── duckdb-native/                         upstream DuckDB build tree
+└── ep/                                    ExternalProject stamps and logs
+```
+
+## Why each isolation rule exists
+
+**xmake cache placement.** `xmake` writes its per-project configuration into the
+*invocation* working directory, not into `-P <project>`. The build therefore runs
+with `CWD=build/sluice-work/<profile>` and `-P <submodule>`; `.xmake` and all
+objects (`--builddir`) stay in the ignored work directory. Verified: after a
+configure+build, `git -C third_party/sluice status --porcelain --ignored` is empty.
+
+**Two work directories, two profiles.** `--liburing=n` and `--liburing=y` must
+never share a `.xmake` cache. Sluice's `xmake/uring.lua` documents the failure
+mode it defends against (a profile switch silently reusing the other profile's
+objects); separate work directories make that impossible at the dududu level as
+well.
+
+**Staging plus `copy_if_different`.** `xmake install` rewrites files
+unconditionally. Installing straight into the SDK prefix would bump archive
+mtimes on every build and relink every consumer. `SyncSdk.cmake` copies only
+changed bytes, so an unchanged SDK keeps its mtime, and removes prefix files the
+new install no longer produces (a target-set change cannot leave a stale archive
+behind).
+
+**`sdk_sync` as a `BYPRODUCTS` step.** The SDK archives are outputs of a named
+ExternalProject step. Without a declared producer, Ninja evaluates a consumer's
+link edge before the install runs, treats the stale archive as up to date, and a
+genuinely changed archive never causes a relink. This was observed and fixed
+during R0 (see below).
+
+**`LINK_DEPENDS` on consumers.** CMake places IMPORTED libraries on the link line
+as implicit prerequisites of the *target*, but the archive file itself is not a
+build-graph input the way a compiled object is; naming the archives in
+`LINK_DEPENDS` is what makes "archive changed → consumer relinks" hold. Also
+observed and fixed during R0.
+
+## Incremental behaviour (verified)
+
+Three-phase probe in an isolated `git worktree` of the Sluice submodule, with a
+separate build root (`build/` untouched, submodule untouched):
+
+| Phase | Archive SHA-256 (first 16) | Consumer binary mtime |
+|---|---|---|
+| first build | `331a95ebc7feffda` | 09:18:41.786901758 |
+| rebuild, no changes | `331a95ebc7feffda` | 09:18:41.786901758 (not relinked) |
+| after a one-line source edit | `1d285ecd06dd2dce` | 09:19:03.731711725 (relinked) |
+
+The no-change build still re-enters `xmake` (that is what lets xmake detect
+source edits) and still runs the sync step, but neither the archive bytes nor the
+consumer binary change. The edited build recompiles, re-archives, syncs, and
+relinks.
+
+Reproduce (destructive only inside `/tmp`, never inside the submodule):
+
+```bash
+git -C third_party/sluice worktree add --detach /tmp/probe HEAD
+cmake -S . -B /tmp/probe-build -G Ninja \
+      -DDUDUDU_SLUICE_SOURCE_DIR=/tmp/probe \
+      -DDUDUDU_BUILD_ROOT=/tmp/probe-root \
+      -DDUDUDU_BUILD_DUCKDB_NATIVE=OFF
+cmake --build /tmp/probe-build --target sluice_core_consumer
+cmake --build /tmp/probe-build --target sluice_core_consumer      # no-op
+printf '\nnamespace sluice { int probe_marker() { return 42; } }\n' >> /tmp/probe/src/blocking_file.cpp
+cmake --build /tmp/probe-build --target sluice_core_consumer      # rebuild + relink
+```
+
+## Profile isolation (verified)
+
+| Profile | `.xmake` location | Installed files | io_uring refs in `libsluice_async.a` |
+|---|---|---|---|
+| `liburing=n` | `build/sluice-work/noliburing/.xmake` | 11 headers + 2 archives | 0 |
+| `liburing=y` | `build/sluice-work/liburing/.xmake` | 11 headers + 2 archives | 11 (`nm -u`) |
+
+`liburing=y` resolved a real liburing (`/usr/include/liburing.h` +
+`liburing.so`) during configure; the capability probe in `xmake/uring.lua` fails
+the build rather than silently degrading to the stub. Nothing about the stub is
+inferred: the absence profile is proven at runtime by
+`sluice.sdk.async.uring-absence` (expects `not_supported`) and the presence
+profile by `sluice.sdk.async.uring` (a real ring round-trip).
+
+## SDK surface
+
+Consumers see exactly the 11 contracted headers and 2 archives. `tests/cmake/VerifySdkBoundary.cmake`
+fails the build on any extra header, any `detail/` header, or any third archive.
+No consumer includes a path under `third_party/sluice/`; the clean-room property
+is structural (the imported target's include directory is the prefix) rather than
+a convention.
+
+## DuckDB
+
+Upstream CMake with upstream options only:
+
+```
+-DCMAKE_BUILD_TYPE=Release -DBUILD_SHELL=ON -DBUILD_UNITTESTS=ON
+-DBUILD_BENCHMARKS=ON -DBUILD_EXTENSIONS=tpch
+-DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF
+-DCMAKE_POLICY_VERSION_MINIMUM=3.5
+```
+
+`CMAKE_POLICY_VERSION_MINIMUM=3.5` restores the floor DuckDB's own
+`cmake_minimum_required(VERSION 3.5...3.29)` declares, which the local CMake 4.x
+otherwise rejects. It changes no source and no semantics.

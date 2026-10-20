@@ -71,7 +71,10 @@ cmake --build build/cmake --target duckdb_native -j8
 
 # DuckDB entry points
 ctest --test-dir build/cmake -R duckdb --output-on-failure -E "benchmark.smoke"
-ctest --test-dir build/cmake -R duckdb.benchmark.smoke --output-on-failure   # ~10 min, TPC-H sf=1
+ctest --test-dir build/cmake -R duckdb.benchmark.smoke --output-on-failure   # slow label, TPC-H sf=1
+
+# Everything (9 tests)
+ctest --test-dir build/cmake --output-on-failure
 ```
 
 `sluice-only` preset skips the DuckDB build (`cmake --preset sluice-only`).
@@ -99,13 +102,32 @@ package — Sluice exports none.
 
 ### DuckDB native benchmark smoke
 
+DuckDB's runner selects benchmarks by a **positional name pattern**, not by a
+flag. `--benchmark=...` does not exist: an unknown `--x=y` is parsed as a custom
+*benchmark* argument, so the runner executes all 1033 registered benchmarks and
+then aborts in whichever one validates that argument.
+
+`--root-dir` is required in practice. The default root is the DuckDB source
+tree, which is also the directory scanned for the `benchmark/` tree of
+interpreted `.benchmark` files, so it cannot simply be pointed anywhere -- but
+left at the default the runner writes ~200 MB of generated TPC-H data into
+`third_party/duckdb`. Symlink the pinned `benchmark/` directory into a scratch
+root and let all writes land there:
+
 ```bash
-cd build/duckdb-native
-./benchmark/benchmark_runner --list | head
-./benchmark/benchmark_runner \
-    --benchmark=benchmark/tpch/parquet/parquet_projection_direct.benchmark \
-    --out=/tmp/bench.json
+mkdir -p build/duckdb-bench
+ln -sfn "$PWD/third_party/duckdb/benchmark" build/duckdb-bench/benchmark
+
+./build/duckdb-native/benchmark/benchmark_runner --list | head
+./build/duckdb-native/benchmark/benchmark_runner \
+    'benchmark/tpch/parquet/parquet_projection_direct.benchmark' \
+    --root-dir "$PWD/build/duckdb-bench" \
+    --out="$PWD/build/duckdb-bench/out.txt"
 ```
+
+Result correctness is **not** in the exit code: a `result` mismatch prints
+`INCORRECT` to the `--out` stream and still exits 0. Read the output.
+`tests/cmake/RunDuckdbBenchmarkSmoke.cmake` does exactly this.
 
 ## Boundaries
 
