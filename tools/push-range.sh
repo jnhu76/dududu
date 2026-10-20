@@ -247,9 +247,15 @@ current_branch_range() {
 
 # wide_ranges: prints one "<base> <sha>" pair per local non-merge commit not
 # known to be on the remote (per-commit, because such a set has no single
-# base that is an ancestor of HEAD).
+# base that is an ancestor of HEAD). --remotes=<name> is rev-list's own ref
+# filter; a literal "refs/remotes/<name>/*" argument would not be expanded
+# and would silently yield an empty set.
 wide_ranges() {
-  local sha parent
+  local sha parent commits
+  if ! commits="$(git rev-list --reverse --no-merges --branches --tags \
+                    --not --remotes="$REMOTE")"; then
+    die "wide push: git rev-list failed; cannot determine the local-only commit set"
+  fi
   while IFS= read -r sha; do
     [ -n "$sha" ] || continue
     if parent="$(git rev-parse --verify --quiet "${sha}^" 2>/dev/null)"; then
@@ -257,7 +263,7 @@ wide_ranges() {
     else
       die "wide push contains a root commit ($sha) that cannot be range-checked; run an explicit check instead: bash tools/check-commit.sh --range <base> <head>"
     fi
-  done < <(git rev-list --reverse --no-merges --branches --tags --not "refs/remotes/$REMOTE/*" 2>/dev/null)
+  done <<< "$commits"
 }
 
 # --- resolution ---------------------------------------------------------------
