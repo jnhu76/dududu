@@ -54,12 +54,20 @@ if(TARGET duckdb_native)
                    -DBENCHMARK_BIN=${DUDUDU_DUCKDB_BENCHMARK}
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunDuckdbBenchmarkList.cmake)
 
+  # DUCKDB_SOURCE_DIR lets the script expose the interpreted `.benchmark` files
+  # (which the runner discovers under <root>/benchmark) to a scratch root dir.
+  # ROOT_DIR is required: the runner's default root is the DuckDB source tree
+  # and it writes generated data there. Keeping the root inside the ignored
+  # build tree is what makes "DuckDB sources unmodified" verifiable after the
+  # test has run.
   add_test(NAME duckdb.benchmark.smoke
            COMMAND ${CMAKE_COMMAND}
                    -DBENCHMARK_BIN=${DUDUDU_DUCKDB_BENCHMARK}
+                   -DDUCKDB_SOURCE_DIR=${DUDUDU_DUCKDB_SOURCE_DIR}
                    "-DBENCHMARK_NAME=benchmark/tpch/parquet/parquet_projection_direct.benchmark"
+                   "-DROOT_DIR=${DUDUDU_BUILD_ROOT}/duckdb-bench"
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunDuckdbBenchmarkSmoke.cmake)
-  # The upstream TPC-H sf=1 data generation dominates this test's runtime; it
-  # is R0 entry-point evidence, not part of the fast loop.
+  # The upstream data generation dominates this test's runtime; it is R0
+  # entry-point evidence, not part of the fast loop.
   set_tests_properties(duckdb.benchmark.smoke PROPERTIES LABELS "slow" TIMEOUT 1800)
 endif()
