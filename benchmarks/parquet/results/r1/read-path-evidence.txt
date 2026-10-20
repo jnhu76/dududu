@@ -1,5 +1,7 @@
 # R1 standalone Parquet: read-path provenance evidence
-# host: Linux 6.18.54.1-microsoft-standard-WSL2 2026-10-20T14:02:33Z
+# host: Linux 6.18.54.1-microsoft-standard-WSL2 2026-10-20T15:40:19Z
+# regenerated at DUDUDU_SHA=852bea06ce4589522dc1041def4d989c25de7a24 after the review fixes;
+# the io_trace serialization/parse changes never touched a byte-moving path.
 
 ## 1. Object-level: which TU issues the byte-moving primitive
 
@@ -7,19 +9,24 @@
                  U pread
 
 ### backend_sluice.cpp.o (P2 backend TU) — no pread/read anywhere:
-(no pread/read undefined symbols)
+(no pread/read undefined symbols; the only byte-moving references are)
+                 U sluice::blocking::read_at(sluice::File const&, unsigned long, std::span<std::byte, ...>)
                  U sluice::blocking::size(sluice::File const&)
-                 U sluice::blocking::read_at(sluice::File const&, unsigned long, std::span<std::byte, 18446744073709551615ul>)
+                 U sluice::blocking::file_info(sluice::File const&)
 
 ### Sluice's own blocking_file.cpp.o (inside libsluice_core.a) issues pread:
                  U pread
 
+Grep counts this run: native TU pread refs=1, sluice TU pread refs=0, sluice TU read_at refs=3.
+
 ## 2. Dynamic: strace pread64 counts per arm (t3_full, small fixture)
 # P1:
-100.00    0.002523          56        45           pread64
+100.00    0.004032          89        45           pread64
 # P2:
-100.00    0.001793          39        45           pread64
-# Both arms: 43 workload reads (see traces) + loader noise; identical counts.
+100.00    0.002511          55        45           pread64
+# Both arms: 43 workload reads + loader noise; identical call counts, and
+# validate-trace.sh confirms the two arms' captured request lists are
+# identical record-for-record (44 lines: header + 43 requests).
 
 ## 3. Behavioral: fault injection at the arm boundary stops the reader
 # parquet.oracle: P1 mid-read refusal, P2 mid-read refusal, P2 fail-every-read,

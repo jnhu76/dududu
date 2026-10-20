@@ -35,30 +35,40 @@ identity records needed to regenerate and re-verify the rest:
 * `manifest-small-none.json`, `manifest-medium-none.json` — dataset freeze
   records (path, bytes, sha256, seed, generator, Arrow version).
 
-The raw artifacts stay under ignored `build/parquet-results/`; the trace
-files' identity for this round (regenerable by rerunning the protocol at
-`run-manifest.txt`'s commit) is: `trace-medium-t3.jsonl` and
-`trace-medium-t3-p2.jsonl` over the medium dataset, each with 57 requests
-and 181996415 requested/returned bytes, byte-identical request lists
-between the arms — that identity, not the files, is the cross-arm check.
+The raw artifacts stay under ignored `build/parquet-results/`. Since the
+run-manifest now records the SHA-256 and line count of each captured trace
+(`TRACE` lines), the files' identity is recoverable exactly: regenerate by
+rerunning the protocol at `run-manifest.txt`'s commit and compare digests.
+Each trace this round has 58 lines (header + 57 requests) over the medium
+dataset with 181996415 requested/returned bytes, and the two arms' request
+lists are identical record-for-record (checked by `validate-trace.sh`
+during the run and by CTest).
 
 ## Frozen numbers this round (sampled pass, mean wall, host disclosed in
 protocol.md; provenance in `run-manifest.txt`)
 
 | workload | dataset | P0 | P1 | P2 | wrapper tax | sluice effect | e2e |
 |---|---|---|---|---|---|---|---|
-| T1_meta | small | 51491 ns | 51102 ns | 51955 ns | −0.76% | +1.67% | +0.90% |
-| T1_meta | medium | 65101 ns | 65284 ns | 65273 ns | +0.28% | −0.02% | +0.26% |
-| T2_projection | small | 1501187 ns | 1494051 ns | 1500397 ns | −0.48% | +0.42% | −0.05% |
-| T2_projection | medium | 35815394 ns | 35883469 ns | 35860500 ns | +0.19% | −0.06% | +0.13% |
-| T3_fullscan | small | 5185013 ns | 5197245 ns | 5130995 ns | +0.24% | −1.27% | −1.04% |
-| T3_fullscan | medium | 121175218 ns | 121319434 ns | 121799091 ns | +0.12% | +0.40% | +0.51% |
-| Replay I/O-only | medium | 191555734 ns (native) | — | 189960508 ns (sluice) | — | −0.83% | — |
+| T1_meta | small | 53920 ns | 53016 ns | 53581 ns | −1.68% | +1.07% | −0.63% |
+| T1_meta | medium | 66693 ns | 66625 ns | 68045 ns | −0.10% | +2.13% | +2.03% |
+| T2_projection | small | 1526124 ns | 1528653 ns | 1535428 ns | +0.17% | +0.44% | +0.61% |
+| T2_projection | medium | 37289362 ns | 36990379 ns | 36846227 ns | −0.80% | −0.39% | −1.19% |
+| T3_fullscan | small | 5425702 ns | 5337575 ns | 5526072 ns | −1.62% | +3.53% | +1.85% |
+| T3_fullscan | medium | 134530095 ns | 136788019 ns | 134088575 ns | +1.68% | −1.97% | −0.33% |
+| Replay I/O-only | medium | 198534305 ns (native) | — | 197981676 ns (sluice) | — | −0.28% | — |
 
-Per-benchmark CV on the sampled pass: 1.1–7.6% (T3/small is the noisy end;
-the load-bearing T3/medium rows sit at 3.0–4.0%). The 4-thread full-scan
-variant ran at 10–16% CV and is exploratory only. Every attribution ratio
+Per-benchmark CV on the sampled pass: 1.0–8.1% on the single-thread rows
+(T3/medium P1 at 8.1% is the noisy end this time). The 4-thread full-scan
+variant ran at 11–16% CV and is exploratory only. Every attribution ratio
 above is unresolved under the resolution rule below.
+
+Run-quality note, recorded because it changed nothing but could have: the
+first protocol invocation after the review fixes ran while an unrelated
+concurrent build saturated the host (load ~13); its summary showed 17–39%
+CV and a 2.4× slower replay. It was discarded on run-quality grounds
+before any receipt was written, and the committed run above is the quiet
+re-run (same binaries, same datasets, same SHA). Both raw JSONs stayed
+out of Git per rule 6.
 
 Resolution rule for the table above: a ratio is called unresolved when its
 magnitude is below the larger of the two arms' CVs. This is a descriptive
