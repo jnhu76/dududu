@@ -15,10 +15,6 @@ set -euo pipefail
 
 json="${1:?usage: summarize.sh <benchmark.json>}"
 
-first_of() { # jq filter body
-    jq -r "$1" "$json"
-}
-
 printf "%-36s %12s %12s %8s %8s %14s %6s\n" \
     BENCH MEAN_ns MEDIAN_ns CV% IO_REQ REQ_BYTES ERRS
 
@@ -27,6 +23,14 @@ for name in $(jq -r '.benchmarks[] | select(.aggregate_name == "mean") | .name' 
     mean=$(jq -r --arg n "$name" '.benchmarks[] | select(.name == $n) | .real_time' "$json")
     med=$(jq -r --arg n "${base}_median" '.benchmarks[] | select(.name == $n) | .real_time' "$json")
     cv=$(jq -r --arg n "${base}_cv" '.benchmarks[] | select(.name == $n) | .real_time' "$json")
+    if [[ "$base" == */p0_* ]]; then
+        # P0 has no transparent I/O hook point (wrapping it would stop it
+        # being the native baseline); print n/a instead of a fake zero.
+        printf "%-36s %12.0f %12.0f %7.2f%% %8s %14s %6s\n" \
+            "$base" "$mean" "$med" "$(awk -v c="$cv" 'BEGIN{print c*100}')" \
+            "n/a" "n/a" "n/a"
+        continue
+    fi
     read -r io req errs rows <<<"$(jq -r --arg n "$base" \
         '[.benchmarks[] | select(.name == $n and .aggregate_name == null)][0]
          | [(.io_calls // 0), (.requested_bytes // 0), (.read_errors // 0), (.rows // 0)] | @tsv' \

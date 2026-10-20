@@ -58,8 +58,12 @@ struct ReplayOutcome {
 ReplayOutcome replay_trace(IoBackend& backend, const TraceFile& trace);
 
 // open + replay + close convenience; fails the replay if open/close fail.
-// The dataset path comes from the trace header.
+// The dataset path comes from the trace header. With verify_dataset (the
+// default) the file is hashed first and must still match the captured
+// dataset_sha; a timed caller that has already verified the identity once
+// may pass false to keep the hashing out of the measured loop.
 arrow::Result<ReplayOutcome> replay_trace_file(const std::string& backend_name,
-                                               const TraceFile& trace);
+                                               const TraceFile& trace,
+                                               bool verify_dataset = true);
 
 } // namespace dududu::parquet

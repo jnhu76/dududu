@@ -21,6 +21,7 @@
 #include "dududu/parquet/io_backend.hpp"
 #include "dududu/parquet/io_trace.hpp"
 #include "dududu/parquet/runner.hpp"
+#include "dududu/parquet/sha256.hpp"
 
 namespace {
 
@@ -110,7 +111,10 @@ void bm_replay(benchmark::State& st, const char* backend_name, const std::string
         return;
     }
     for (auto _ : st) {
-        auto r = dududu::parquet::replay_trace_file(backend_name, *trace);
+        // Dataset identity was verified once at startup (see main); the
+        // measured loop replays reads only, without re-hashing the file.
+        auto r = dududu::parquet::replay_trace_file(backend_name, *trace,
+                                                    /*verify_dataset=*/false);
         if (!r.ok()) {
             st.SkipWithError(r.status().ToString().c_str());
             return;
@@ -155,8 +159,9 @@ int main(int argc, char** argv) {
             gb_args.push_back(argv[i]);
         }
     }
-    if (g_datasets.small.empty() || g_datasets.medium.empty()) {
-        std::fprintf(stderr, "parquet_bench: --small and --medium dataset paths are required\n");
+    if (g_datasets.small.empty() && g_datasets.medium.empty()) {
+        std::fprintf(stderr,
+                     "parquet_bench: pass at least one of --small/--medium dataset paths\n");
         return 2;
     }
     if (!g_datasets.trace.empty() && !load_trace(g_datasets.trace)) {
@@ -168,8 +173,32 @@ int main(int argc, char** argv) {
     int gb_argc = static_cast<int>(argv_full.size());
     benchmark::Initialize(&gb_argc, argv_full.data());
 
-    const std::pair<const char*, const std::string*> datasets[] = {
-        {"small", &g_datasets.small}, {"medium", &g_datasets.medium}};
+    std::vector<std::pair<const char*, const std::string*>> datasets;
+    if (!g_datasets.small.empty()) {
+        datasets.push_back({"small", &g_datasets.small});
+    }
+    if (!g_datasets.medium.empty()) {
+        datasets.push_back({"medium", &g_datasets.medium});
+    }
+    // Dataset identity goes into the run log so a result set can always be
+    // tied to the exact bytes measured. When a trace is in play, its captured
+    // dataset is verified exactly once, here — never inside the timed loop.
+    for (const auto& [ds_name, ds_path] : datasets) {
+        const std::string sha = dududu::parquet::sha256_file(*ds_path);
+        std::printf("# dataset %s path=%s sha256=%s\n", ds_name, ds_path->c_str(),
+                    sha.c_str());
+        if (!g_datasets.trace.empty()) {
+            const auto* trace = trace_for(g_datasets.trace);
+            if (trace != nullptr && trace->dataset_path == *ds_path &&
+                !trace->dataset_sha.empty() && trace->dataset_sha != sha) {
+                std::fprintf(stderr,
+                             "parquet_bench: dataset %s does not match the "
+                             "captured trace (captured=%s actual=%s)\n",
+                             ds_name, trace->dataset_sha.c_str(), sha.c_str());
+                return 2;
+            }
+        }
+    }
     const std::pair<Arm, const char*> arms[] = {
         {Arm::p0_arrow, "p0_arrow"}, {Arm::p1_native, "p1_native"},
         {Arm::p2_sluice, "p2_sluice"}};
@@ -192,6 +221,9 @@ int main(int argc, char** argv) {
     // 4-thread full-scan variant: explores shared-file read concurrency with
     // per-iteration private handles (time-only reporting, see add_counters).
     for (const auto& [arm, arm_name] : arms) {
+        if (g_datasets.medium.empty()) {
+            break;
+        }
         std::string name = std::string("T3_fullscan_t4/") + arm_name + "/medium";
         benchmark::RegisterBenchmark(name, [=](benchmark::State& st) {
             bm_workload(st, arm, Workload::t3_full, g_datasets.medium);

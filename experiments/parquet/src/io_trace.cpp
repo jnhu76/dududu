@@ -69,14 +69,22 @@ std::uint64_t json_uint_value(std::string_view line, std::string_view key,
     return v;
 }
 
-Workload workload_from_name(const std::string& name) {
+// Strict: an unknown workload name must fail the capture, never fall back
+// to a full scan under a typo's label.
+bool workload_from_name(const std::string& name, Workload* out) {
     if (name == "t1_meta") {
-        return Workload::t1_meta;
+        *out = Workload::t1_meta;
+        return true;
     }
     if (name == "t2_projection") {
-        return Workload::t2_projection;
+        *out = Workload::t2_projection;
+        return true;
     }
-    return Workload::t3_full;
+    if (name == "t3_full") {
+        *out = Workload::t3_full;
+        return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -161,7 +169,11 @@ arrow::Status capture_trace_to_file(Arm arm, const std::string& workload_name_st
         return st;
     }
     configure_reader(builder); // capture the same config the timed arms see
-    const auto workload = workload_from_name(workload_name_str);
+    Workload workload;
+    if (!workload_from_name(workload_name_str, &workload)) {
+        return arrow::Status::Invalid("capture: unknown workload name: ",
+                                      workload_name_str);
+    }
     if (workload != Workload::t1_meta) {
         ARROW_ASSIGN_OR_RAISE(auto reader, builder.Build());
         std::shared_ptr<arrow::Table> table;
@@ -181,8 +193,13 @@ arrow::Status capture_trace_to_file(Arm arm, const std::string& workload_name_st
 
     TraceFile trace;
     // Diagnostic evidence, never a timing sample; hashing the file here is
-    // fine and keeps the trace self-describing.
+    // fine and keeps the trace self-describing. An empty digest means the
+    // file could not be read — a trace without a dataset identity is not
+    // evidence, so fail instead of recording one.
     trace.dataset_sha = sha256_file(parquet_path);
+    if (trace.dataset_sha.empty()) {
+        return arrow::Status::IOError("capture: dataset digest failed: ", parquet_path);
+    }
     trace.dataset_path = parquet_path;
     trace.workload = workload_name_str;
     trace.arm = arm_name(arm);
@@ -275,9 +292,25 @@ ReplayOutcome replay_trace(IoBackend& backend, const TraceFile& trace) {
 }
 
 arrow::Result<ReplayOutcome> replay_trace_file(const std::string& backend_name,
-                                               const TraceFile& trace) {
+                                               const TraceFile& trace,
+                                               bool verify_dataset) {
     if (trace.dataset_path.empty()) {
         return arrow::Status::Invalid("trace lacks dataset_path; cannot replay");
+    }
+    if (verify_dataset && !trace.dataset_sha.empty()) {
+        // The trace is only evidence for the bytes it was captured over. A
+        // regenerated or mutated dataset (even same-length) must not replay
+        // under the old identity.
+        const std::string actual = sha256_file(trace.dataset_path);
+        if (actual.empty()) {
+            return arrow::Status::IOError("replay: dataset digest failed: ",
+                                          trace.dataset_path);
+        }
+        if (actual != trace.dataset_sha) {
+            return arrow::Status::Invalid(
+                "replay: dataset changed since capture: ", trace.dataset_path,
+                " captured=", trace.dataset_sha, " actual=", actual);
+        }
     }
     std::unique_ptr<IoBackend> backend =
         backend_name == "native" ? make_native_backend() : make_sluice_backend();

@@ -30,6 +30,27 @@ bench="$build_dir/experiments/parquet/parquet_bench"
 
 mkdir -p "$data_dir" "$results_dir"
 
+# Provenance manifest (AGENTS rule 1 / matrix rule 4): every result set
+# carries both SHAs, the SDK identity, the sampling parameters and the host.
+dududu_sha=$(git rev-parse HEAD)
+sluice_sha=$(git -C third_party/sluice rev-parse HEAD)
+{
+    echo "DUDUDU_SHA=$dududu_sha"
+    echo "SLUICE_SHA=$sluice_sha"
+    echo "SLUICE_PROFILE=noliburing"
+    echo "SDK_PREFIX=build/sluice-sdk/noliburing"
+    echo "ARROW_VERSION=$(pkg-config --modversion arrow 2>/dev/null || echo unknown)"
+    echo "PARQUET_VERSION=$(pkg-config --modversion parquet 2>/dev/null || echo unknown)"
+    echo "REPS=$REPS"
+    echo "WARMUP_SECONDS=$WARMUP_SECONDS"
+    echo "KERNEL=$(uname -r)"
+    echo "DATE_UTC=$(date -u +%FT%TZ)"
+    echo "COMPILER=$(g++ -dumpversion)"
+    for f in "$data_dir"/small-none.parquet "$data_dir"/medium-none.parquet; do
+        [[ -f "$f" ]] && echo "DATASET $f $(sha256sum "$f" | awk '{print $1}') $(stat -c%s "$f")"
+    done
+} > "$results_dir/run-manifest.txt"
+
 datasets="${1:-both}"
 [[ "$datasets" == "small" || "$datasets" == "medium" || "$datasets" == "both" ]] || {
     echo "usage: run-bench.sh [small|medium|both]" >&2
@@ -44,19 +65,29 @@ gen() { # name
     fi
 }
 
-run_pass() { # pass-name datasets
+run_pass() { # pass-name
     local pass="$1"
-    local small_args=() medium_args=()
-    if [[ "$2" == "small" || "$2" == "both" ]]; then small_args=(--small="$data_dir/small-none.parquet"); fi
-    if [[ "$2" == "medium" || "$2" == "both" ]]; then medium_args=(--medium="$data_dir/medium-none.parquet"); fi
+    local args=()
+    if [[ -f "$data_dir/small-none.parquet" ]]; then
+        args+=(--small="$data_dir/small-none.parquet")
+    fi
+    if [[ -f "$data_dir/medium-none.parquet" ]]; then
+        args+=(--medium="$data_dir/medium-none.parquet")
+    fi
+    if [[ -f "$results_dir/trace-medium-t3.jsonl" ]]; then
+        args+=(--trace="$results_dir/trace-medium-t3.jsonl")
+    fi
     local json="$results_dir/$pass.json"
+    local log="$results_dir/$pass.log"
     echo "== $pass -> $json"
-    "$bench" "${small_args[@]}" "${medium_args[@]}" \
-        --trace="$results_dir/trace-medium-t3.jsonl" \
+    # Console output (dataset identities, GB progress, any SkipWithError) is
+    # evidence too; it lands in the log next to the JSON.
+    "$bench" "${args[@]}" \
         --benchmark_repetitions="$REPS" \
         --benchmark_min_warmup_time="$WARMUP_SECONDS" \
         --benchmark_format=json \
-        --benchmark_out="$json" >/dev/null
+        --benchmark_out="$json" > "$log" 2>&1
+    grep -E "^# dataset|SkipWithError|error" "$log" || true
 }
 
 [[ "$datasets" == "small" || "$datasets" == "both" ]] && gen small
@@ -71,9 +102,9 @@ if [[ "$datasets" == "medium" || "$datasets" == "both" ]]; then
 fi
 
 # Pass 1: warm the caches (file content + reader code paths). Discarded.
-run_pass warmup-pass "$datasets"
+run_pass warmup-pass
 # Pass 2: the sampled pass. Only this JSON feeds the summary.
-run_pass measure-pass "$datasets"
+run_pass measure-pass
 
 echo "== summary"
 bash benchmarks/parquet/summarize.sh "$results_dir/measure-pass.json" \
