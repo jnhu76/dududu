@@ -116,9 +116,10 @@ Local (Lefthook, see `lefthook.yml`):
 2. `pre-commit` — `git diff --cached --check` only.
 3. `pre-push` — sequential, fail-fast:
    1. checker self-test;
-   2. every commit the push would publish (`tools/push-range.sh`, which
-      rebuilds the pushed set because lefthook does not forward the pre-push
-      ref lines — it fails hard when the range is undeterminable);
+   2. every commit the push actually publishes (`tools/push-range.sh`,
+      fed by Git's own pre-push ref/SHA stream through lefthook's
+      `use_stdin`; an empty stream is `NO_NEW_COMMITS`, malformed data or an
+      unresolvable object is a hard failure);
    3. whitespace check over the same commits;
    4. the Sluice-only CMake/CTest gate, only when the push touches build
       files, C++ sources, tests, benchmarks, tools, hooks or submodule
@@ -126,7 +127,9 @@ Local (Lefthook, see `lefthook.yml`):
 
 Manual run. It invokes every pre-push command, but step 4 still decides from
 the paths the resolved ranges touch; a docs-only run skips CMake/CTest, and
-that skip is not a pass:
+that skip is not a pass. A manual run has no push stream, so the commit and
+whitespace steps validate the current branch against its tracking/baseline
+ref (use `bash tools/push-range.sh --range BASE HEAD` to check another range):
 
 ```bash
 lefthook run pre-push --all-files
@@ -161,9 +164,10 @@ out of scope for R0.1.
 
 A push with `--no-verify` is not machine-checked anywhere; CI would still
 reject a non-conforming PR title. Fix headers in place (`git commit
---amend`, `git rebase -i`) instead of pushing around the gate. Bootstrapping
-the very first push to a brand-new remote (no baseline to diff against) is
-the one accepted `LEFTHOOK=0 git push ...` case.
+--amend`, `git rebase -i`) instead of pushing around the gate. A first push
+to a brand-new remote is checked like any other new ref: Git reports a
+zero remote SHA, and the gate validates the full history of the pushed commit
+(roots by message), so no bootstrap bypass is needed.
 
 ## Why this design
 
@@ -182,18 +186,23 @@ the one accepted `LEFTHOOK=0 git push ...` case.
 - **Negative-first tests:** the suite in `tools/tests/check-commit-test.sh`
   was written before the checker and fails against a missing or permissive
   checker; a green run is meaningful only because red runs exist.
-- **Conservative push detection:** lefthook consumes the pre-push ref lines,
-  so `tools/push-range.sh` reconstructs the pushed set from the `git push`
-  command line and git state, and FAILS when it cannot. It understands git
-  global options (`git -c ... push`, `git -C path push`), explicit and
-  wildcard refspecs (`*` crosses `/`, exactly like Git), negative exclusions,
-  `remote.<name>.push` recipes (including command-line `-c` overrides), and
-  mirror pushes (`--mirror` or `remote.<name>.mirror`), which validate every
-  ref namespace instead of only branches and tags. An unparseable push is a
-  hard failure, never a fallback to the current branch. The alternative —
-  validating a hardcoded range like `origin/main..HEAD` and going green —
-  would silently miss force-pushes, multi-ref pushes, configured refspecs,
-  mirror namespaces and missing-baseline pushes.
+- **Authoritative push data, not a Git emulator:** Git writes one
+  `<local ref> <local sha> <remote ref> <remote sha>` line per ref it will
+  publish to the pre-push hook. lefthook replays that stream to
+  `tools/push-range.sh`, which validates exactly those SHAs. Options,
+  `remote.<name>.push` recipes, explicit/wildcard/negative refspecs,
+  matching refspecs (`:` and `+:`), `--all` and `--mirror` are therefore
+  resolved by Git itself. An earlier version reconstructed the push set from
+  the `git push` command line; three review rounds found real pushes it
+  misparsed (global options, configured refspecs, mirror namespaces,
+  matching refspecs), so the reconstruction was removed rather than
+  extended. Deletions carry a zero local SHA and validate nothing; a new
+  remote ref or an object absent locally falls back to validating the full
+  local history, which is a superset and never a guess. Malformed or
+  unresolvable push data is a hard failure, never a fallback to the current
+  branch. Manual runs have no push stream and check the current branch (or
+  `--range`); that path cannot hide a published ref because it is only used
+  when nothing is being pushed.
 
 The governing principle:
 

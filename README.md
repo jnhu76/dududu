@@ -109,7 +109,7 @@ Fast local verification (what `pre-push` runs, sequentially, fail-fast):
 
 ```bash
 bash tools/check-commit.sh --self-test                          # checker refutes itself
-bash tools/push-range.sh validate                               # commits this push would publish
+bash tools/push-range.sh validate                               # commits this push publishes (manual: current branch)
 bash tools/push-range.sh whitespace                             # whitespace in those commits
 bash tools/tests/push-range-test.sh                             # resolver scenarios (dev-run)
 cmake --preset sluice-only && \
@@ -120,8 +120,11 @@ ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
 The build+CTest step is triggered by the hook only when the push touches
 build files, C++ sources, tests, benchmarks, tools, hooks or submodule
 gitlinks; a docs-only push skips the compile but still runs the convention
-and whitespace checks. Manual run (all hook commands; the compile step stays
-path-dependent, so a skipped CTest is a skip, not a pass):
+and whitespace checks. The pushed refs come from Git's own pre-push stream
+(the refs it will actually publish, including mirror and matching pushes), so
+the gate never reconstructs them from the command line. Manual run (all hook
+commands; the compile step stays path-dependent, so a skipped CTest is a
+skip, not a pass):
 
 ```bash
 lefthook run pre-push --all-files
