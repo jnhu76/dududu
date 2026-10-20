@@ -81,7 +81,7 @@ cmake --build build/cmake --target duckdb_native -j8
 ctest --test-dir build/cmake -R duckdb --output-on-failure -E "benchmark.smoke"
 ctest --test-dir build/cmake -R duckdb.benchmark.smoke --output-on-failure   # slow label, TPC-H sf=1
 
-# Everything (9 tests)
+# Everything (13 tests)
 ctest --test-dir build/cmake --output-on-failure
 ```
 

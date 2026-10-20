@@ -50,6 +50,12 @@ build/
 └── ep/                                    ExternalProject stamps and logs (duckdb/<sha> per generation)
 ```
 
+The `release` and `sluice-only` presets configure two CMake trees that share one
+`DUDUDU_BUILD_ROOT`. They must be driven **serially**: both would run `xmake`
+in the same work directories and both would drive the same DuckDB build tree,
+and neither build system holds a lock against the other. Give a second tree its
+own `-DDUDUDU_BUILD_ROOT` if two builds must run in parallel.
+
 ## Why each isolation rule exists
 
 **xmake cache placement.** `xmake` writes its per-project configuration into the
@@ -165,7 +171,9 @@ profile by `sluice.sdk.async.uring` (a real ring round-trip).
 
 ## SDK surface
 
-Consumers see exactly the 11 contracted headers and 2 archives. `tests/cmake/VerifySdkBoundary.cmake`
+Consumers see exactly the 11 contracted headers and 2 archives, on **both**
+profiles. `tests/cmake/VerifySdkBoundary.cmake`
+(`sluice.sdk.header-boundary.noliburing` and `sluice.sdk.header-boundary.liburing`)
 fails the build on any extra header, any `detail/` header, or any third archive.
 No consumer includes a path under `third_party/sluice/`; the clean-room property
 is structural (the imported target's include directory is the prefix) rather than

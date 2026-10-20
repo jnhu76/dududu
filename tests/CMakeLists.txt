@@ -31,9 +31,15 @@ dududu_link_sluice(sluice_uring_absence async)
 add_test(NAME sluice.sdk.async.uring-absence COMMAND sluice_uring_absence)
 
 # --- Installed-surface boundary --------------------------------------------
-add_test(NAME sluice.sdk.header-boundary
+# Both profiles must expose the identical contracted surface; neither is
+# inferred from the other.
+add_test(NAME sluice.sdk.header-boundary.noliburing
          COMMAND ${CMAKE_COMMAND}
                  -DSDK_DIR=${DUDUDU_SLUICE_SDK_NOLIBURING}
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifySdkBoundary.cmake)
+add_test(NAME sluice.sdk.header-boundary.liburing
+         COMMAND ${CMAKE_COMMAND}
+                 -DSDK_DIR=${DUDUDU_SLUICE_SDK_LIBURING}
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifySdkBoundary.cmake)
 
 # --- SDK sync and install hygiene -------------------------------------------
