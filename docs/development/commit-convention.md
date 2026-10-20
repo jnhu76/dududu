@@ -121,14 +121,24 @@ Local (Lefthook, see `lefthook.yml`):
       ref lines — it fails hard when the range is undeterminable);
    3. whitespace check over the same commits;
    4. the Sluice-only CMake/CTest gate, only when the push touches build
-      files, C++ sources, tests, tools, hooks or submodule gitlinks.
+      files, C++ sources, tests, benchmarks, tools, hooks or submodule
+      gitlinks.
 
-Canonical manual run (executes the complete gate; with the config present it
-cannot be a vacuous pass — a branch that deletes this file falls outside
-machine enforcement, exactly like a `--no-verify` push):
+Manual run. It invokes every pre-push command, but step 4 still decides from
+the paths the resolved ranges touch; a docs-only run skips CMake/CTest, and
+that skip is not a pass:
 
 ```bash
 lefthook run pre-push --all-files
+```
+
+Complete manual gate on any range, including docs-only (this is the explicit
+build-step override; with the config present the run cannot be a vacuous
+pass — a branch that deletes this file falls outside machine enforcement,
+exactly like a `--no-verify` push):
+
+```bash
+DUDUDU_FORCE_BUILD_GATE=1 lefthook run pre-push --all-files
 ```
 
 The two tool suites that back the gate are plain Bash and run standalone:
@@ -174,10 +184,14 @@ the one accepted `LEFTHOOK=0 git push ...` case.
   checker; a green run is meaningful only because red runs exist.
 - **Conservative push detection:** lefthook consumes the pre-push ref lines,
   so `tools/push-range.sh` reconstructs the pushed set from the `git push`
-  command line and git state, and FAILS when it cannot. The alternative —
+  command line and git state, and FAILS when it cannot. It understands git
+  global options (`git -c ... push`, `git -C path push`), explicit and
+  wildcard refspecs, negative exclusions, and `remote.<name>.push` recipes
+  (including command-line `-c` overrides). An unparseable push is a hard
+  failure, never a fallback to the current branch. The alternative —
   validating a hardcoded range like `origin/main..HEAD` and going green —
-  would silently miss force-pushes, multi-ref pushes and missing-baseline
-  pushes.
+  would silently miss force-pushes, multi-ref pushes, configured refspecs and
+  missing-baseline pushes.
 
 The governing principle:
 

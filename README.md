@@ -118,13 +118,15 @@ ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
 ```
 
 The build+CTest step is triggered by the hook only when the push touches
-build files, C++ sources, tests, tools, hooks or submodule gitlinks; a
-docs-only push skips the compile but still runs the convention and whitespace
-checks. Canonical manual run (always the complete gate, never a vacuous
-pass):
+build files, C++ sources, tests, benchmarks, tools, hooks or submodule
+gitlinks; a docs-only push skips the compile but still runs the convention
+and whitespace checks. Manual run (all hook commands; the compile step stays
+path-dependent, so a skipped CTest is a skip, not a pass):
 
 ```bash
 lefthook run pre-push --all-files
+# complete gate, forcing build+CTest even for a docs-only range:
+DUDUDU_FORCE_BUILD_GATE=1 lefthook run pre-push --all-files
 ```
 
 Full local validation remains the author's responsibility and depends on the

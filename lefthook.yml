@@ -31,14 +31,22 @@
 #
 # The remote name is not passed as {1}: an empty placeholder would make
 # manual runs look like "no files for inspection", and push-range.sh
-# recovers the remote from the `git push` command line itself (default:
-# origin).
+# recovers the remote from the `git push` command line (or Git's
+# default-remote config) itself, defaulting to origin.
 #
-# Canonical manual entrypoint (executes the complete gate; with the config
-# present it cannot be a vacuous pass — a branch that deletes this file is
-# outside machine enforcement, exactly like `git push --no-verify`):
+# Canonical manual entrypoint (invokes every pre-push command; the build step
+# still decides from the paths the resolved ranges touch, so a docs-only run
+# skips CMake/CTest — that is a skip, not a pass):
 #
 #     lefthook run pre-push --all-files
+#
+# Complete manual gate, forcing build+CTest even for a docs-only range:
+#
+#     DUDUDU_FORCE_BUILD_GATE=1 lefthook run pre-push --all-files
+#
+# With the config present the commands cannot be a vacuous pass — a branch
+# that deletes this file is outside machine enforcement, exactly like
+# `git push --no-verify`.
 
 min_version: 2.1.16
 
@@ -89,8 +97,10 @@ pre-push:
       #
       # Path-awareness lives in `push-range.sh relevant`, which inspects the
       # commits actually being pushed (cross-branch, multi-ref, force and
-      # first pushes included). Exit codes: 0 build, 1 skip (docs/metadata
-      # only), 2 undeterminable -> hard fail, never a silent skip.
+      # first pushes included, plus benchmark sources). Exit codes: 0 build,
+      # 1 skip (docs/metadata only), 2 undeterminable -> hard fail, never a
+      # silent skip. DUDUDU_FORCE_BUILD_GATE=1 forces the build step for the
+      # manual full gate.
       priority: 4
       files: printf '%s\n' lefthook.yml
       run: |

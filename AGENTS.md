@@ -82,8 +82,8 @@ actual commands and results in the PR description:
 
 | Change touches | Minimum local evidence |
 | --- | --- |
-| Docs only (`*.md`, docs/) | `lefthook run pre-push --all-files` (convention checks; the compile gate is skipped for real doc-only pushes) |
-| CMake, SDK bridge, tools, hooks, CI, submodule pins | Sluice-only gate: `cmake --preset sluice-only && cmake --build build/cmake-sluice --parallel 4 && ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1` |
+| Docs only (`*.md`, docs/) | `lefthook run pre-push --all-files` (convention/whitespace; the compile gate is skipped for real doc-only ranges, and that skip is not a pass). Add `DUDUDU_FORCE_BUILD_GATE=1` when the compile chain itself must run. |
+| CMake, SDK bridge, benchmarks, tools, hooks, CI, submodule pins | Sluice-only gate: `cmake --preset sluice-only && cmake --build build/cmake-sluice --parallel 4 && ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1` |
 | DuckDB adapter, experiment interfaces, correctness tests, benchmark oracle | The Sluice-only gate **plus** the DuckDB native build, DuckDB correctness tests (`ctest -R duckdb`), and the benchmark oracle, per `docs/experiment-matrix.md` admission. Performance numbers require the formal experiment admission; nothing here fakes it. |
 
 PR descriptions must state what actually ran and what actually passed. A test
