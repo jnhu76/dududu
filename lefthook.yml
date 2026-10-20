@@ -13,9 +13,29 @@
 # never be mutated concurrently) and stops at the first red check, cheapest
 # first.
 #
-# Canonical manual entrypoint (forces every glob to the full tree, so a
-# manual run always executes the complete gate — the native push-file list
-# can be empty on a fully pushed branch, which would be a vacuous pass):
+# Why every command sets `files:` and references `{files}` in a trailing
+# shell comment: lefthook derives pre-push "push files" from the CURRENT
+# branch only. When that branch has nothing unpushed — `git push
+# origin other-branch`, `git push --all`, force pushes of another ref — the
+# list is empty and lefthook skips EVERY pre-push command, including
+# commands without a glob (verified on 2.1.16: a cross-branch push ran zero
+# checks). A `files:` command whose output does not exist on disk is also
+# ignored (lefthook filters it through FindExistingFiles), and a run that
+# never mentions a files template still hits the push-file skip. So:
+#   - `files: printf '%s\n' lefthook.yml` yields an existing file, and
+#   - `# gate sentinel: {files}` is a shell no-op that makes lefthook
+#     consider the command to have files, so it always runs.
+# Path-awareness for the compile gate is decided inside
+# tools/push-range.sh from the commit ranges the push really carries, never
+# from lefthook's current-branch heuristic.
+#
+# The remote name is not passed as {1}: an empty placeholder would make
+# manual runs look like "no files for inspection", and push-range.sh
+# recovers the remote from the `git push` command line itself (default:
+# origin).
+#
+# Canonical manual entrypoint (executes the complete gate; can never be a
+# vacuous pass):
 #
 #     lefthook run pre-push --all-files
 
@@ -42,21 +62,23 @@ pre-push:
     commit-checker-selftest:
       # The checker must refute itself before it is trusted with the push.
       priority: 1
-      run: bash tools/check-commit.sh --self-test
+      files: printf '%s\n' lefthook.yml
+      run: 'bash tools/check-commit.sh --self-test  # gate sentinel: {files}'
 
     push-commit-range:
       # Validate every commit this push would publish. lefthook does not
       # forward the pre-push ref lines, so tools/push-range.sh rebuilds the
       # pushed set from the git push command line and git state; it fails
-      # hard when the range cannot be determined. {1} is the remote name on
-      # real pushes and empty on manual runs.
+      # hard when the range cannot be determined.
       priority: 2
-      run: bash tools/push-range.sh validate {1}
+      files: printf '%s\n' lefthook.yml
+      run: 'bash tools/push-range.sh validate  # gate sentinel: {files}'
 
     push-whitespace:
       # Whitespace errors inside the pushed commits (not the working tree).
       priority: 3
-      run: bash tools/push-range.sh whitespace {1}
+      files: printf '%s\n' lefthook.yml
+      run: 'bash tools/push-range.sh whitespace  # gate sentinel: {files}'
 
     sluice-gate:
       # Fast local build + CTest gate (Sluice SDK profile only). Never builds
@@ -64,24 +86,27 @@ pre-push:
       # sluice.sdk.install-wipe mutates the shared staging tree; RUN_SERIAL
       # on that test is the second layer (tests/CMakeLists.txt).
       #
-      # Path-awareness: any build definition, C++ source, test, hook,
-      # checker or submodule gitlink triggers the gate; a docs-only push
-      # skips the compile but still runs the three checks above.
+      # Path-awareness lives in `push-range.sh relevant`, which inspects the
+      # commits actually being pushed (cross-branch, multi-ref, force and
+      # first pushes included). Exit codes: 0 build, 1 skip (docs/metadata
+      # only), 2 undeterminable -> hard fail, never a silent skip.
       priority: 4
-      glob:
-        - "CMakeLists.txt"
-        - "CMakePresets.json"
-        - "cmake/**"
-        - "src/**"
-        - "include/**"
-        - "experiments/**"
-        - "tests/**"
-        - "tools/**"
-        - "lefthook.yml"
-        - ".github/workflows/**"
-        - "third_party/sluice"
-        - "third_party/duckdb"
+      files: printf '%s\n' lefthook.yml
       run: |
-        cmake --preset sluice-only &&
-        cmake --build build/cmake-sluice --parallel 4 &&
-        ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
+        # gate sentinel: {files}
+        rc=0
+        bash tools/push-range.sh relevant || rc=$?
+        case "$rc" in
+          0)
+            cmake --preset sluice-only &&
+            cmake --build build/cmake-sluice --parallel 4 &&
+            ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
+            ;;
+          1)
+            echo "sluice-gate: skipped (no build-relevant files in the pushed commits)"
+            ;;
+          *)
+            echo "sluice-gate: ERROR: cannot determine the pushed file set" >&2
+            exit 1
+            ;;
+        esac

@@ -25,9 +25,12 @@
 # NO_NEW_COMMITS. Nothing here writes, stages, amends or touches the network.
 #
 # Usage:
-#   tools/push-range.sh [validate|whitespace|print] [remote] [--range B H]
+#   tools/push-range.sh [validate|whitespace|relevant|files|print] [remote] [--range B H]
 #     validate    (default) run tools/check-commit.sh --range per resolved range
 #     whitespace  run `git diff --check` per commit of each resolved range
+#     relevant    exit 0 when the pushed set touches build-relevant paths,
+#                 1 when it is docs/metadata only, 2 when undeterminable
+#     files       print the changed files of the resolved ranges
 #     print       print resolved ranges as "<base> <head>" lines
 #   DUDUDU_PUSH_REMOTE overrides the remote (default: argument, else origin)
 
@@ -43,12 +46,15 @@ MODE="validate"
 REMOTE="${DUDUDU_PUSH_REMOTE:-}"
 RANGE_OVERRIDE_BASE=""
 RANGE_OVERRIDE_HEAD=""
+DIE_CODE=1
 
 usage() {
   cat >&2 <<EOF
-usage: tools/push-range.sh [validate|whitespace|print] [remote] [--range BASE HEAD]
+usage: tools/push-range.sh [validate|whitespace|relevant|files|print] [remote] [--range BASE HEAD]
   validate    run the commit checker on every resolved push range (default)
   whitespace  git diff --check every commit of the resolved ranges
+  relevant    exit 0 if the pushed set touches build-relevant paths, 1 if not, 2 if undeterminable
+  files       print the changed files of the resolved ranges
   print       print resolved ranges as "<base> <head>" lines
   remote      remote name (lefthook passes it as {1}; default: origin)
   --range B H validate the explicit range instead of resolving the push
@@ -56,14 +62,14 @@ exit codes: 0 pass, 1 policy failure or undeterminable push, 2 usage error
 EOF
 }
 
-die() { printf 'push-range: ERROR: %s\n' "$*" >&2; exit 1; }
+die() { printf 'push-range: ERROR: %s\n' "$*" >&2; exit "$DIE_CODE"; }
 note() { printf 'push-range: %s\n' "$*"; }
 
 # --- argument parsing --------------------------------------------------------
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    validate|whitespace|print) MODE="$1"; shift ;;
+    validate|whitespace|relevant|files|print) MODE="$1"; shift ;;
     --range) [ $# -ge 3 ] || { usage; exit 2; }
              RANGE_OVERRIDE_BASE="$2"; RANGE_OVERRIDE_HEAD="$3"; shift 3 ;;
     -h|--help) usage; exit 0 ;;
@@ -367,9 +373,50 @@ do_print() {
   [ "${#RANGES[@]}" -gt 0 ] || note "no ranges (deletion-only or no-op push)"
 }
 
+# Paths whose change invalidates the compiled gate. Kept in sync with the
+# build inputs listed in AGENTS.md; docs-only pushes intentionally fall
+# outside it.
+RELEVANT_RE='^(CMakeLists\.txt|CMakePresets\.json|cmake/|src/|include/|experiments/|tests/|tools/|lefthook\.yml$|\.github/workflows/|third_party/(sluice|duckdb)$)'
+
+do_files() {
+  local r base head
+  for r in "${RANGES[@]}"; do
+    base="${r% *}"
+    head="${r##* }"
+    git diff --name-only "$base" "$head" || return 1
+  done | sort -u
+}
+
+# Exit semantics are tri-state on purpose: 0 = build needed, 1 = docs-only,
+# 2 = undeterminable (must fail the gate, never skip it).
+do_relevant() {
+  local files
+  if [ "${#RANGES[@]}" -eq 0 ]; then
+    note "relevant: deletion-only or no-op push; build gate not needed"
+    return 1
+  fi
+  files="$(do_files)" || die "cannot diff the resolved ranges"
+  if [ -z "$files" ]; then
+    note "relevant: no file changes in the resolved ranges; build gate not needed"
+    return 1
+  fi
+  if printf '%s\n' "$files" | grep -Eq "$RELEVANT_RE"; then
+    note "relevant: build-relevant paths changed:"
+    printf '%s\n' "$files" | grep -E "$RELEVANT_RE" | sed 's/^/  /'
+    return 0
+  fi
+  note "relevant: only non-build paths changed; build gate not needed"
+  return 1
+}
+
+if [ "$MODE" = "relevant" ]; then
+  DIE_CODE=2   # an undeterminable push must fail, not read as "not relevant"
+fi
 resolve_ranges
 case "$MODE" in
   validate)   do_validate ;;
   whitespace) do_whitespace ;;
+  relevant)   do_relevant ;;
+  files)      do_files ;;
   print)      do_print ;;
 esac
