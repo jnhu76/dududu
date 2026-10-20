@@ -88,6 +88,13 @@ run_pass() { # pass-name
         --benchmark_format=json \
         --benchmark_out="$json" > "$log" 2>&1
     grep -E "^# dataset|SkipWithError|error" "$log" || true
+    # Fail closed: a pass is only usable if the exact expected roster ran
+    # with $REPS clean samples each. A partial or errored JSON (missing arm,
+    # SkipWithError, short sampling) aborts the protocol here and never
+    # reaches the summary.
+    local trace_args=()
+    [[ -f "$results_dir/trace-medium-t3.jsonl" ]] && trace_args=(--trace)
+    bash benchmarks/parquet/validate-results.sh "$json" "$datasets" "$REPS" "${trace_args[@]}"
 }
 
 [[ "$datasets" == "small" || "$datasets" == "both" ]] && gen small

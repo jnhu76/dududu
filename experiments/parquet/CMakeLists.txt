@@ -62,8 +62,10 @@ if(NOT DUDUDU_JQ_EXECUTABLE)
 endif()
 add_test(NAME parquet.trace.jsonl
          COMMAND bash "${CMAKE_SOURCE_DIR}/benchmarks/parquet/tests/validate-trace-test.sh")
+add_test(NAME parquet.bench.admit
+         COMMAND bash "${CMAKE_SOURCE_DIR}/benchmarks/parquet/tests/validate-results-test.sh")
 
 set_tests_properties(parquet.contract parquet.oracle parquet.trace parquet.trace.jsonl
-  PROPERTIES
+  parquet.bench.admit PROPERTIES
   LABELS "parquet"
   TIMEOUT 600)
