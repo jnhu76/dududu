@@ -1,0 +1,294 @@
+#include "dududu/parquet/io_trace.hpp"
+
+#include <arrow/status.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <charconv>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#include <parquet/arrow/reader.h>
+
+#include "dududu/parquet/adapter_file.hpp"
+#include "dududu/parquet/io_decorators.hpp"
+#include "dududu/parquet/reader_config.hpp"
+#include "dududu/parquet/runner.hpp"
+#include "dududu/parquet/sha256.hpp"
+
+namespace dududu::parquet {
+
+namespace {
+
+constexpr const char* kTraceType = "dududu-parquet-io-trace";
+constexpr int kTraceVersion = 1;
+
+std::string esc(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string_view json_string_value(std::string_view line, std::string_view key) {
+    const std::string needle = "\"" + std::string(key) + "\":\"";
+    const auto p = line.find(needle);
+    if (p == std::string_view::npos) {
+        return {};
+    }
+    const auto start = p + needle.size();
+    const auto end = line.find('"', start);
+    if (end == std::string_view::npos) {
+        return {};
+    }
+    return line.substr(start, end - start);
+}
+
+std::uint64_t json_uint_value(std::string_view line, std::string_view key,
+                              std::uint64_t fallback) {
+    const std::string needle = "\"" + std::string(key) + "\":";
+    const auto p = line.find(needle);
+    if (p == std::string_view::npos) {
+        return fallback;
+    }
+    const auto start = p + needle.size();
+    std::uint64_t v = 0;
+    const auto [ptr, ec] = std::from_chars(line.data() + start, line.data() + line.size(), v);
+    if (ec != std::errc()) {
+        return fallback;
+    }
+    return v;
+}
+
+Workload workload_from_name(const std::string& name) {
+    if (name == "t1_meta") {
+        return Workload::t1_meta;
+    }
+    if (name == "t2_projection") {
+        return Workload::t2_projection;
+    }
+    return Workload::t3_full;
+}
+
+} // namespace
+
+std::string serialize_trace(const TraceFile& trace) {
+    std::string out;
+    out.reserve(64 + trace.requests.size() * 80);
+    out += "{\"type\":\"" + std::string(kTraceType) + "\",\"version\":" +
+           std::to_string(kTraceVersion);
+    out += ",\"dataset_sha\":\"" + esc(trace.dataset_sha) + "\"";
+    out += ",\"dataset_path\":\"" + esc(trace.dataset_path) + "\"";
+    out += ",\"workload\":\"" + esc(trace.workload) + "\"";
+    out += ",\"arm\":\"" + esc(trace.arm) + "\"";
+    out += ",\"file_size\":" + std::to_string(trace.file_size) + "\n";
+    for (const TraceRequest& r : trace.requests) {
+        out += "{\"i\":" + std::to_string(r.index) + ",\"offset\":" +
+               std::to_string(r.offset) + ",\"requested\":" + std::to_string(r.requested) +
+               ",\"returned\":" + std::to_string(r.returned) + ",\"ok\":" +
+               (r.ok ? "true" : "false") + "}\n";
+    }
+    return out;
+}
+
+bool parse_trace(std::string_view text, TraceFile* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    *out = TraceFile{};
+    std::size_t pos = 0;
+    bool first = true;
+    while (pos < text.size()) {
+        const auto eol = text.find('\n', pos);
+        if (eol == std::string_view::npos) {
+            break;
+        }
+        const std::string_view line = text.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (line.empty()) {
+            continue;
+        }
+        if (first) {
+            first = false;
+            if (json_string_value(line, "type") != kTraceType ||
+                json_uint_value(line, "version", 0) != static_cast<std::uint64_t>(kTraceVersion)) {
+                return false;
+            }
+            out->dataset_sha = std::string(json_string_value(line, "dataset_sha"));
+            out->dataset_path = std::string(json_string_value(line, "dataset_path"));
+            out->workload = std::string(json_string_value(line, "workload"));
+            out->arm = std::string(json_string_value(line, "arm"));
+            out->file_size = json_uint_value(line, "file_size", 0);
+            continue;
+        }
+        TraceRequest r;
+        r.index = json_uint_value(line, "i", 0);
+        r.offset = json_uint_value(line, "offset", 0);
+        r.requested = json_uint_value(line, "requested", 0);
+        r.returned = json_uint_value(line, "returned", 0);
+        r.ok = line.find("\"ok\":true") != std::string_view::npos;
+        out->requests.push_back(r);
+    }
+    return !first;
+}
+
+arrow::Status capture_trace_to_file(Arm arm, const std::string& workload_name_str,
+                                    const std::string& parquet_path,
+                                    const std::string& out_path) {
+    // The capture arm is always one of the instrumented arms.
+    if (arm == Arm::p0_arrow) {
+        return arrow::Status::Invalid("trace capture needs an instrumented arm (p1/p2)");
+    }
+
+    std::vector<TraceEntry> entries;
+    ARROW_ASSIGN_OR_RAISE(auto file,
+                          AdapterFile::open(
+                              std::make_unique<TracingBackend>(
+                                  std::make_unique<CountingBackend>(make_backend(arm)), &entries),
+                              parquet_path));
+
+    ::parquet::arrow::FileReaderBuilder builder;
+    if (auto st = builder.Open(file); !st.ok()) {
+        return st;
+    }
+    configure_reader(builder); // capture the same config the timed arms see
+    const auto workload = workload_from_name(workload_name_str);
+    if (workload != Workload::t1_meta) {
+        ARROW_ASSIGN_OR_RAISE(auto reader, builder.Build());
+        std::shared_ptr<arrow::Table> table;
+        if (auto st = workload == Workload::t2_projection
+                          ? reader->ReadTable(projection_columns(), &table)
+                          : reader->ReadTable(&table);
+            !st.ok()) {
+            return st;
+        }
+        if (table == nullptr) {
+            return arrow::Status::IOError("trace capture produced no table");
+        }
+    }
+    if (auto st = file->Close(); !st.ok()) {
+        return st;
+    }
+
+    TraceFile trace;
+    // Diagnostic evidence, never a timing sample; hashing the file here is
+    // fine and keeps the trace self-describing.
+    trace.dataset_sha = sha256_file(parquet_path);
+    trace.dataset_path = parquet_path;
+    trace.workload = workload_name_str;
+    trace.arm = arm_name(arm);
+
+    // file size via the same backend family (size() is not a data read).
+    {
+        auto backend = make_backend(arm);
+        if (auto st = backend->open(parquet_path); !st.ok()) {
+            return st;
+        }
+        ARROW_ASSIGN_OR_RAISE(int64_t fsize, backend->size());
+        trace.file_size = static_cast<std::uint64_t>(fsize);
+        if (auto st = backend->close(); !st.ok()) {
+            return st;
+        }
+    }
+
+    trace.requests.reserve(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const TraceEntry& e = entries[i];
+        TraceRequest r;
+        r.index = i;
+        r.offset = e.offset;
+        r.requested = e.requested;
+        r.returned = e.returned;
+        r.ok = e.ok;
+        trace.requests.push_back(r);
+    }
+
+    const std::string text = serialize_trace(trace);
+    FILE* f = std::fopen(out_path.c_str(), "wb");
+    if (f == nullptr) {
+        return arrow::Status::IOError("trace write open failed: ", std::strerror(errno));
+    }
+    if (std::fwrite(text.data(), 1, text.size(), f) != text.size()) {
+        std::fclose(f);
+        return arrow::Status::IOError("trace write failed: ", out_path);
+    }
+    if (std::fclose(f) != 0) {
+        return arrow::Status::IOError("trace close failed: ", out_path);
+    }
+    return arrow::Status::OK();
+}
+
+ReplayOutcome replay_trace(IoBackend& backend, const TraceFile& trace) {
+    ReplayOutcome out;
+    std::vector<std::byte> buf;
+    std::size_t max_len = 1;
+    for (const TraceRequest& r : trace.requests) {
+        max_len = std::max<std::size_t>(max_len, static_cast<std::size_t>(r.requested));
+    }
+    buf.resize(max_len);
+
+    for (const TraceRequest& r : trace.requests) {
+        if (!r.ok) {
+            out.mismatches.push_back("trace request " + std::to_string(r.index) +
+                                     " was a failed read; replay needs successful traces");
+            return out;
+        }
+        if (r.requested == 0) {
+            ++out.requests;
+            continue;
+        }
+        auto got = backend.read_at(static_cast<int64_t>(r.offset),
+                                   static_cast<int64_t>(r.requested), buf.data());
+        if (!got.ok()) {
+            out.mismatches.push_back("request " + std::to_string(r.index) + " failed: " +
+                                     got.status().ToString());
+            return out;
+        }
+        if (static_cast<uint64_t>(got.ValueOrDie()) != r.returned) {
+            out.mismatches.push_back("request " + std::to_string(r.index) + " returned " +
+                                     std::to_string(got.ValueOrDie()) + " expected " +
+                                     std::to_string(r.returned));
+            return out;
+        }
+        // Consume the bytes: the checksum forces every returned byte through
+        // the CPU, so a backend cannot win by skipping the copy it promised.
+        const std::byte* p = buf.data();
+        std::uint64_t h = out.fnv;
+        for (std::size_t i = 0; i < static_cast<std::size_t>(got.ValueOrDie()); ++i) {
+            h ^= static_cast<std::uint64_t>(p[i]);
+            h *= 0x100000001B3ULL;
+        }
+        out.fnv = h;
+        out.bytes += static_cast<std::uint64_t>(got.ValueOrDie());
+        ++out.requests;
+    }
+    return out;
+}
+
+arrow::Result<ReplayOutcome> replay_trace_file(const std::string& backend_name,
+                                               const TraceFile& trace) {
+    if (trace.dataset_path.empty()) {
+        return arrow::Status::Invalid("trace lacks dataset_path; cannot replay");
+    }
+    std::unique_ptr<IoBackend> backend =
+        backend_name == "native" ? make_native_backend() : make_sluice_backend();
+    if (auto st = backend->open(trace.dataset_path); !st.ok()) {
+        return st;
+    }
+    ReplayOutcome out = replay_trace(*backend, trace);
+    if (auto st = backend->close(); !st.ok()) {
+        return st;
+    }
+    return out;
+}
+
+} // namespace dududu::parquet

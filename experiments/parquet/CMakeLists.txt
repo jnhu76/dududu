@@ -13,3 +13,15 @@ find_package(Parquet REQUIRED)
 find_package(benchmark CONFIG REQUIRED)
 
 message(STATUS "Parquet experiment: Arrow ${Arrow_VERSION}, Parquet ${Parquet_VERSION}")
+
+set(DUDUDU_PARQUET_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+add_library(dududu_parquet STATIC
+  src/sha256.cpp
+  src/fixture.cpp)
+target_include_directories(dududu_parquet PUBLIC ${DUDUDU_PARQUET_INCLUDE_DIR})
+target_link_libraries(dududu_parquet PUBLIC Arrow::arrow_shared Parquet::parquet_shared)
+target_compile_features(dududu_parquet PUBLIC cxx_std_20)
+
+add_executable(parquet_fixture src/tools/fixture_main.cpp)
+target_link_libraries(parquet_fixture PRIVATE dududu_parquet)
