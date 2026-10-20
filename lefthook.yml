@@ -1,0 +1,134 @@
+# dududu local verification gates — Lefthook (R0.1).
+#
+# Role split (docs/development/commit-convention.md):
+#   - These hooks are the LOCAL REJECTION layer. They only check: no
+#     formatting, no auto-fixing, no re-staging, no amending, no commits,
+#     no network access.
+#   - GitHub Actions (.github/workflows/repo-policy.yml) only checks
+#     repository policy (PR title + checker self-test). It is a policy
+#     verdict, never a build or correctness verdict: local-first means the
+#     developer's machine produces the build and test evidence.
+#
+# `piped: true` keeps the pre-push steps sequential (shared SDK staging must
+# never be mutated concurrently) and stops at the first red check, cheapest
+# first.
+#
+# Why every push command sets `files:` and references `{files}` in a trailing
+# shell comment: lefthook derives pre-push "push files" from the CURRENT
+# branch only. When that branch has nothing unpushed — `git push
+# origin other-branch`, `git push --all`, force pushes of another ref — the
+# list is empty and lefthook skips EVERY pre-push command, including
+# commands without a glob (verified on 2.1.16: a cross-branch push ran zero
+# checks). A `files:` command whose output does not exist on disk is also
+# ignored (lefthook filters it through FindExistingFiles), and a run that
+# never mentions a files template still hits the push-file skip. So:
+#   - `files: printf '%s\n' lefthook.yml` yields an existing file, and
+#   - `# gate sentinel: {files}` is a shell no-op that makes lefthook
+#     consider the command to have files, so it always runs.
+# Path-awareness for the compile gate is decided inside
+# tools/push-range.sh from the commit ranges the push really carries, never
+# from lefthook's current-branch heuristic.
+#
+# Why `use_stdin: true`: Git writes the refs it will publish to the pre-push
+# hook's stdin (`<local ref> <local sha> <remote ref> <remote sha>`). lefthook
+# 2.1.16 reads that stream for its own bookkeeping but replays it, intact, to
+# every command with `use_stdin: true` (verified with three sequential
+# commands). tools/push-range.sh therefore validates exactly the SHAs Git
+# reports: options, configured refspecs, wildcards, negative and matching
+# refspecs, --all and --mirror are all resolved by Git, not re-implemented
+# here. A new remote ref validates only commits NOT reachable from the
+# immutable pre-policy boundary pinned inside tools/push-range.sh (the R0
+# main tip), so inherited R0 history is never re-judged while new commits
+# and unrelated roots still are. `{1}` expands to the remote name in a real
+# push and stays literal (`{1}`) in a manual `lefthook run pre-push`, which
+# selects manual mode (current branch or --range).
+#
+# Canonical manual entrypoint (invokes every pre-push command; the build step
+# still decides from the paths the resolved ranges touch, so a docs-only run
+# skips CMake/CTest — that is a skip, not a pass):
+#
+#     lefthook run pre-push --all-files
+#
+# Complete manual gate, forcing build+CTest even for a docs-only range:
+#
+#     DUDUDU_FORCE_BUILD_GATE=1 lefthook run pre-push --all-files
+#
+# With the config present the commands cannot be a vacuous pass — a branch
+# that deletes this file is outside machine enforcement, exactly like
+# `git push --no-verify`.
+
+min_version: 2.1.16
+
+commit-msg:
+  commands:
+    commit-convention:
+      # {1} is the commit-message file. Comment lines ('#') are stripped by
+      # the checker exactly like git strips them after the hook; an illegal
+      # header blocks the commit and nothing is ever rewritten.
+      run: bash tools/check-commit.sh --file {1} --label "commit message"
+
+pre-commit:
+  commands:
+    whitespace:
+      # Staged whitespace errors only. Deliberately nothing else: no
+      # formatting, no git add, no amend.
+      run: git diff --cached --check
+
+pre-push:
+  piped: true
+  commands:
+    commit-checker-selftest:
+      # The checker must refute itself before it is trusted with the push.
+      priority: 1
+      files: printf '%s\n' lefthook.yml
+      run: 'bash tools/check-commit.sh --self-test  # gate sentinel: {files}'
+
+    push-commit-range:
+      # Validate every commit this push actually publishes. The ref/SHA lines
+      # come from Git through stdin; an empty stream means nothing is being
+      # published, and malformed data is a hard failure.
+      priority: 2
+      use_stdin: true
+      files: printf '%s\n' lefthook.yml
+      run: 'DUDUDU_PRE_PUSH_REMOTE="{1}" bash tools/push-range.sh validate  # gate sentinel: {files}'
+
+    push-whitespace:
+      # Whitespace errors inside the pushed commits (not the working tree).
+      priority: 3
+      use_stdin: true
+      files: printf '%s\n' lefthook.yml
+      run: 'DUDUDU_PRE_PUSH_REMOTE="{1}" bash tools/push-range.sh whitespace  # gate sentinel: {files}'
+
+    sluice-gate:
+      # Fast local build + CTest gate (Sluice SDK profile only). Never builds
+      # DuckDB, never downloads, never benchmarks. Serial CTest because
+      # sluice.sdk.install-wipe mutates the shared staging tree; RUN_SERIAL
+      # on that test is the second layer (tests/CMakeLists.txt).
+      #
+      # Path-awareness lives in `push-range.sh relevant`, which inspects the
+      # commits actually being pushed (cross-branch, multi-ref, force and
+      # first pushes included, plus benchmark sources). Exit codes: 0 build,
+      # 1 skip (docs/metadata only), 2 undeterminable -> hard fail, never a
+      # silent skip. DUDUDU_FORCE_BUILD_GATE=1 forces the build step for the
+      # manual full gate.
+      priority: 4
+      use_stdin: true
+      files: printf '%s\n' lefthook.yml
+      run: |
+        # gate sentinel: {files}
+        rc=0
+        DUDUDU_PRE_PUSH_REMOTE="{1}" bash tools/push-range.sh relevant || rc=$?
+        case "$rc" in
+          0)
+            cmake --preset sluice-only &&
+            cmake --build build/cmake-sluice --parallel 4 &&
+            ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
+            ;;
+          1)
+            echo "sluice-gate: skipped (no build-relevant files in the pushed commits)"
+            ;;
+          *)
+            echo "sluice-gate: ERROR: cannot determine the pushed file set" >&2
+            exit 1
+            ;;
+        esac

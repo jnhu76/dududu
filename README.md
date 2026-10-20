@@ -87,7 +87,61 @@ ctest --test-dir build/cmake --output-on-failure
 
 `sluice-only` preset skips the DuckDB build (`cmake --preset sluice-only`).
 
-### Sluice SDK
+## Development workflow (R0.1 gates)
+
+Commits and PR titles follow [Conventional Commits](docs/development/commit-convention.md):
+`<type>(<scope>): <subject>` with a required kebab-case scope (e.g.
+`feat(adapter): add native filesystem wrapper`). Lefthook enforces the rule
+locally; GitHub Actions checks the PR title plus the checker self-test
+(**Repository Policy PASS** — a policy verdict, not a build verdict).
+
+One-time setup after cloning:
+
+```bash
+# Install lefthook (a single static Go binary; no Node/npm involved):
+go install github.com/evilmartians/lefthook/v2@v2.1.16
+#   or: brew install lefthook
+#   or download a release binary from https://github.com/evilmartians/lefthook/releases
+lefthook install        # wires commit-msg / pre-commit / pre-push into .git/hooks
+```
+
+Fast local verification (what `pre-push` runs, sequentially, fail-fast):
+
+```bash
+bash tools/check-commit.sh --self-test                          # checker refutes itself
+bash tools/push-range.sh validate                               # commits this push publishes (manual: current branch)
+bash tools/push-range.sh whitespace                             # whitespace in those commits
+bash tools/tests/push-range-test.sh                             # resolver scenarios (dev-run)
+cmake --preset sluice-only && \
+cmake --build build/cmake-sluice --parallel 4 && \
+ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1
+```
+
+The build+CTest step is triggered by the hook only when the push touches
+build files, C++ sources, tests, benchmarks, tools, hooks or submodule
+gitlinks; a docs-only push skips the compile but still runs the convention
+and whitespace checks. The pushed refs come from Git's own pre-push stream
+(the refs it will actually publish, including mirror and matching pushes), so
+the gate never reconstructs them from the command line. A new remote ref is
+validated against the immutable pre-policy boundary
+(`6e5f5c6db08f5b6780e13d92f357c65cdc865538`, the R0 main tip): inherited R0
+history is never re-judged, while new commits and unrelated roots still are.
+Manual run (all hook commands; the compile step stays path-dependent, so a
+skipped CTest is a skip, not a pass):
+
+```bash
+lefthook run pre-push --all-files
+# complete gate, forcing build+CTest even for a docs-only range:
+DUDUDU_FORCE_BUILD_GATE=1 lefthook run pre-push --all-files
+```
+
+Full local validation remains the author's responsibility and depends on the
+change scope — see the verification table in
+[`AGENTS.md`](AGENTS.md). DuckDB adapter/experiment changes additionally
+require the DuckDB build, correctness tests and the benchmark oracle before
+review; the lightweight CI will never produce that evidence.
+
+## Sluice SDK
 
 Sluice is built by **its own xmake project**, never by a second CMake definition:
 
@@ -113,7 +167,7 @@ CMake exposes dududu-local imported targets `Sluice::core`, `Sluice::async`,
 `Sluice::core_uring`, `Sluice::async_uring`. These are **not** an upstream CMake
 package — Sluice exports none.
 
-### DuckDB native benchmark smoke
+## DuckDB native benchmark smoke
 
 DuckDB's runner selects benchmarks by a **positional name pattern**, not by a
 flag. `--benchmark=...` does not exist: an unknown `--x=y` is parsed as a custom
@@ -162,4 +216,6 @@ absence is deliberate; see `docs/experiment-matrix.md`.
 - [`docs/duckdb-stable-io-map.md`](docs/duckdb-stable-io-map.md) — v1.5.6
   synchronous and asynchronous I/O call chains with source references.
 - [`docs/experiment-matrix.md`](docs/experiment-matrix.md) — arms and admission.
+- [`docs/development/commit-convention.md`](docs/development/commit-convention.md) —
+  commit/PR title convention and the local verification gates.
 - [`docs/r0-report.md`](docs/r0-report.md) — R0 result, environment, limitations.

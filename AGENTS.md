@@ -34,6 +34,9 @@ semantics.
    perf traces and datasets stay ignored.
 7. **One concern per commit.** Repository bootstrap, SDK bridge, DuckDB baseline
    and experiment architecture are separate commits.
+8. **No new toolchains without a real need.** Prefer Bash, Git, CMake, CTest and
+   Lefthook; do not add Node/npm, Husky, commitlint, Docker or a new orchestrator
+   for what these already cover.
 
 ## Reading order for a change
 
@@ -44,3 +47,50 @@ semantics.
 3. `docs/experiment-matrix.md` — admission rules for the arm being touched.
 4. `third_party/sluice/llms.txt` — navigation into Sluice's authority, not a
    substitute for it.
+
+## Commits and pull requests
+
+Every commit and every PR title follows the Conventional Commits dialect
+defined in [`docs/development/commit-convention.md`](docs/development/commit-convention.md):
+
+```text
+<type>(<scope>): <subject>
+```
+
+with `type` ∈ `feat fix perf refactor test build ci docs chore revert`, a
+required kebab-case scope naming a real responsibility (`repo`, `sdk`,
+`cmake`, `duckdb`, `adapter`, `bench`, `oracle` — never phase labels like
+`r0`/`d2`/`phase-1`), and a lowercase subject; header ≤ 72 characters, no
+trailing full stop. One concern per commit (rule 7 above) and a semantic
+header per commit.
+
+Lefthook enforces this locally (`commit-msg`, `pre-commit`, `pre-push` — run
+`lefthook install` once after cloning). Do not bypass with `--no-verify`;
+fix the header instead. The pre-push gate never rewrites history and never
+mutates the index or tracked files (the compile gate writes only ignored
+`build/` artifacts). CI (`.github/workflows/repo-policy.yml`)
+checks the PR title and runs the checker self-test — nothing else. Its
+**Repository Policy PASS** is a policy verdict, never a build or correctness
+verdict. Never report it as `BUILD_PASS` or `CORRECTNESS_PASS`.
+
+## Verification before review
+
+Local-first: hooks are bypassable and CI is policy-only, so the PR author —
+human or coding agent — owns the correctness evidence. Before opening a PR
+for review, run the verification that matches the change scope and record the
+actual commands and results in the PR description:
+
+| Change touches | Minimum local evidence |
+| --- | --- |
+| Docs only (`*.md`, docs/) | `lefthook run pre-push --all-files` (convention/whitespace; the compile gate is skipped for real doc-only ranges, and that skip is not a pass). Add `DUDUDU_FORCE_BUILD_GATE=1` when the compile chain itself must run. |
+| CMake, SDK bridge, benchmarks, tools, hooks, CI, submodule pins | Sluice-only gate: `cmake --preset sluice-only && cmake --build build/cmake-sluice --parallel 4 && ctest --test-dir build/cmake-sluice --output-on-failure --parallel 1` |
+| DuckDB adapter, experiment interfaces, correctness tests, benchmark oracle | The Sluice-only gate **plus** the DuckDB native build, DuckDB correctness tests (`ctest -R duckdb`), and the benchmark oracle, per `docs/experiment-matrix.md` admission. Performance numbers require the formal experiment admission; nothing here fakes it. |
+
+PR descriptions must state what actually ran and what actually passed. A test
+that was not run is not green, and a hook result may not be described as a
+build result. Tests never use `sleep` as synchronization (rule 5). Within one
+gate invocation the CTest run is serial (`--parallel 1` plus `RUN_SERIAL` on
+the staging-mutating `sluice.sdk.install-wipe` test), so shared SDK staging
+is never mutated concurrently by the gate itself; two independent builds or
+CTest runs against the same checkout are outside the hook's control and
+should not be run at the same time.

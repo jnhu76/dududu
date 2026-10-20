@@ -1,0 +1,53 @@
+# Repository Policy — the only CI workflow in dududu (R0.1).
+#
+# This job proves REPOSITORY POLICY PASS and nothing else: the PR title
+# follows the commit convention and the local commit checker refutes itself.
+# It is explicitly NOT a build, correctness or performance verdict — those are
+# produced locally (lefthook pre-push gate + developer-run CTest), because
+# dududu is local-first. Naming here is contractual: do not rename this check
+# to anything that sounds like a build or correctness gate.
+#
+# Deliberate cost boundary: one job, no matrix, no cache, no artifacts, no
+# submodules, no C++, no CMake/CTest, no DuckDB/Sluice downloads, no Lefthook
+# install, no extra language runtimes — only the runner's own bash and git.
+
+name: Repository Policy
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repo-policy:
+    name: Repository Policy PASS
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out policy files (no submodules, no history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+          persist-credentials: false
+
+      - name: Commit checker self-test
+        run: bash tools/check-commit.sh --self-test
+
+      - name: Pull request title follows the commit convention
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          bash tools/check-commit.sh --message "$PR_TITLE" --label "PR title"
+
+      - name: Repository Policy PASS
+        run: |
+          echo "REPOSITORY POLICY PASS"
+          echo "Scope: PR title convention + checker self-test only."
+          echo "This is not a build, correctness or performance verdict."
