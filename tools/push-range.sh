@@ -32,7 +32,8 @@
 #                 1 when it is docs/metadata only, 2 when undeterminable
 #     files       print the changed files of the resolved ranges
 #     print       print resolved ranges as "<base> <head>" lines
-#   DUDUDU_PUSH_REMOTE overrides the remote (default: argument, else origin)
+#   DUDUDU_PUSH_REMOTE supplies a default remote (origin when unset); on a
+#   real push the remote parsed from the `git push` command line wins.
 
 set -u -o pipefail
 export LC_ALL=C.UTF-8
@@ -56,7 +57,8 @@ usage: tools/push-range.sh [validate|whitespace|relevant|files|print] [remote] [
   relevant    exit 0 if the pushed set touches build-relevant paths, 1 if not, 2 if undeterminable
   files       print the changed files of the resolved ranges
   print       print resolved ranges as "<base> <head>" lines
-  remote      remote name (lefthook passes it as {1}; default: origin)
+  remote      default remote name (origin when omitted; on a real push the
+              remote parsed from the git push command line wins)
   --range B H validate the explicit range instead of resolving the push
 exit codes: 0 pass, 1 policy failure or undeterminable push, 2 usage error
 EOF
@@ -115,15 +117,17 @@ find_push_args() {
 # Parse the recovered git push argument vector. Sets:
 #   SPECS[]          refspecs (positional args minus the remote)
 #   WIDE=1           --all/--mirror/--tags/--follow-tags present
+#   DELETE_ONLY=1    -d/--delete present (deletion publish, no commits)
 #   SPECS_RELIABLE=1 args were fully understood
 parse_push_args() {
   SPECS=()
   WIDE=0
+  DELETE_ONLY=0
   SPECS_RELIABLE=1
   local -a novalue=(
     -q --quiet -v --verbose -f --force -n --dry-run --all --branches --mirror
     --tags --follow-tags --atomic --porcelain -u --set-upstream -t --thin
-    --no-verify --verify --force-with-lease --force-if-includes
+    -d --delete --no-verify --verify --force-with-lease --force-if-includes
     --no-force-if-includes --no-signed --signed --prune --no-prune
     --no-thin --progress --no-progress --no-recurse-submodules -4 --ipv4
     -6 --ipv6
@@ -140,11 +144,12 @@ parse_push_args() {
       fi
       # combined short flags (e.g. -qu, -fu): fine when every letter is a
       # known value-less option
-      if [ "$known" -eq 0 ] && [[ $arg =~ ^-[qvfntu]+$ ]]; then
+      if [ "$known" -eq 0 ] && [[ $arg =~ ^-[qvfntud]+$ ]]; then
         known=1
       fi
       case "$arg" in
         --all|--branches|--mirror|--tags|--follow-tags) WIDE=1 ;;
+        -d|--delete) DELETE_ONLY=1 ;;
       esac
       if [ "$known" -eq 1 ]; then
         :
@@ -201,7 +206,8 @@ refspec_range() {
     dst="$rs"
   fi
   if [ -z "$src" ]; then
-    note "refspec '$rs' deletes '$dst': no commits to validate"
+    # Deletion refspec: the caller prints the note (this function's stdout is
+    # captured as the range).
     return 2
   fi
   sha="$(git rev-parse --verify --quiet "${src}^{commit}")" ||
@@ -245,30 +251,45 @@ current_branch_range() {
   printf '%s %s' "$base" "$head_sha"
 }
 
-# wide_ranges: prints one "<base> <sha>" pair per local non-merge commit not
-# known to be on the remote (per-commit, because such a set has no single
-# base that is an ancestor of HEAD). --remotes=<name> is rev-list's own ref
-# filter; a literal "refs/remotes/<name>/*" argument would not be expanded
-# and would silently yield an empty set.
-wide_ranges() {
+# collect_wide: fills RANGES and ROOTS with every local non-merge commit not
+# known to be on the remote. Root commits cannot form a base..head range, so
+# they are collected separately and validated by message in do_validate.
+# --remotes=<name> is rev-list's own ref filter; a literal
+# "refs/remotes/<name>/*" argument would not be expanded and would silently
+# yield an empty set. Returns 1 (the caller must fail) when rev-list fails.
+collect_wide() {
   local sha parent commits
   if ! commits="$(git rev-list --reverse --no-merges --branches --tags \
                     --not --remotes="$REMOTE")"; then
-    die "wide push: git rev-list failed; cannot determine the local-only commit set"
+    return 1
   fi
   while IFS= read -r sha; do
     [ -n "$sha" ] || continue
     if parent="$(git rev-parse --verify --quiet "${sha}^" 2>/dev/null)"; then
-      printf '%s %s\n' "$parent" "$sha"
+      RANGES+=("$parent $sha")
     else
-      die "wide push contains a root commit ($sha) that cannot be range-checked; run an explicit check instead: bash tools/check-commit.sh --range <base> <head>"
+      ROOTS+=("$sha")
     fi
   done <<< "$commits"
+}
+
+resolve_wide() {
+  local reason="$1"
+  note "mode=wide remote=$REMOTE ($reason)"
+  ROOTS=()
+  if ! collect_wide; then
+    # Never fail open: an unresolved wide push must be red.
+    die "wide push: cannot determine the local-only commit set"
+  fi
+  if [ "${#RANGES[@]}" -eq 0 ] && [ "${#ROOTS[@]}" -eq 0 ]; then
+    note "NO_NEW_COMMITS: nothing local is missing from $REMOTE"
+  fi
 }
 
 # --- resolution ---------------------------------------------------------------
 resolve_ranges() {
   RANGES=()
+  ROOTS=()
   if [ -n "$RANGE_OVERRIDE_BASE" ]; then
     verify_commit "$RANGE_OVERRIDE_BASE" || die "cannot resolve override base '$RANGE_OVERRIDE_BASE'"
     verify_commit "$RANGE_OVERRIDE_HEAD" || die "cannot resolve override head '$RANGE_OVERRIDE_HEAD'"
@@ -280,42 +301,31 @@ resolve_ranges() {
   if find_push_args; then
     parse_push_args
     if [ "${#SPECS[@]}" -gt 0 ] && [ "$SPECS_RELIABLE" -eq 1 ] && [ "$WIDE" -eq 0 ]; then
-      local rs r out rc
+      local rs out rc
+      if [ "$DELETE_ONLY" -eq 1 ]; then
+        note "mode=delete remote=$REMOTE specs=${SPECS[*]}: deletion publish, no commits to validate"
+        return 0
+      fi
       note "mode=refspec remote=$REMOTE specs=${SPECS[*]}"
       for rs in "${SPECS[@]}"; do
         out=""
         rc=0
         out="$(refspec_range "$rs")" || rc=$?
-        [ "$rc" -eq 2 ] && continue          # deletion: nothing to validate
+        if [ "$rc" -eq 2 ]; then
+          note "refspec '$rs': deletion publish, no commits to validate"
+          continue
+        fi
         RANGES+=("$out")
       done
       return 0
     fi
     if [ "$WIDE" -eq 1 ]; then
-      note "mode=wide remote=$REMOTE (unrecognized or multi-ref push: every local commit not on $REMOTE is validated)"
-      wide_ranges_validated=1
-      local line
-      while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        RANGES+=("$line")
-      done < <(wide_ranges)
-      if [ "${#RANGES[@]}" -eq 0 ]; then
-        note "NO_NEW_COMMITS: nothing local is missing from $REMOTE"
-      fi
+      resolve_wide "unrecognized or multi-ref push: every local commit not on $REMOTE is validated"
       return 0
     fi
     # reliable-looking bare `git push` (no refspecs): push.default decides
     if [ "$(git config push.default 2>/dev/null || printf simple)" = "matching" ]; then
-      WIDE=1
-      note "mode=wide remote=$REMOTE (push.default=matching)"
-      local line
-      while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        RANGES+=("$line")
-      done < <(wide_ranges)
-      if [ "${#RANGES[@]}" -eq 0 ]; then
-        note "NO_NEW_COMMITS: nothing local is missing from $REMOTE"
-      fi
+      resolve_wide "push.default=matching"
       return 0
     fi
   fi
@@ -329,8 +339,8 @@ resolve_ranges() {
 
 # --- checks -------------------------------------------------------------------
 do_validate() {
-  local r base head rc total=0
-  if [ "${#RANGES[@]}" -eq 0 ]; then
+  local r base head sha body
+  if [ "${#RANGES[@]}" -eq 0 ] && [ "${#ROOTS[@]}" -eq 0 ]; then
     note "nothing to validate (deletion-only or no-op push)"
     return 0
   fi
@@ -338,20 +348,22 @@ do_validate() {
     base="${r% *}"
     head="${r##* }"
     bash "$CHECKER" --range "$base" "$head" --label "pushed commit" || return 1
-    total=$((total + 1))
+  done
+  for sha in "${ROOTS[@]}"; do
+    body="$(git show -s --format=%B "$sha")" || die "cannot read commit $sha"
+    bash "$CHECKER" --message "$body" --label "commit ${sha:0:12}" || return 1
   done
   return 0
 }
 
 do_whitespace() {
-  local r base head sha parent bad=0 n=0
+  local r base head sha parent bad=0 n=0 err
   for r in "${RANGES[@]}"; do
     base="${r% *}"
     head="${r##* }"
     while IFS= read -r sha; do
       [ -n "$sha" ] || continue
       n=$((n + 1))
-      local err
       if parent="$(git rev-parse --verify --quiet "${sha}^" 2>/dev/null)"; then
         err="$(git diff --check "$parent" "$sha")"
       else
@@ -363,6 +375,14 @@ do_whitespace() {
       fi
     done < <(git rev-list --no-merges --reverse "$base..$head")
   done
+  for sha in "${ROOTS[@]}"; do
+    n=$((n + 1))
+    err="$(git diff --check "$EMPTY_TREE" "$sha")"
+    if [ -n "$err" ]; then
+      printf 'push-range: whitespace error in %s:\n%s\n' "${sha:0:12}" "$err" >&2
+      bad=1
+    fi
+  done
   if [ "$bad" -ne 0 ]; then
     printf 'push-range: ERROR: whitespace violations in the pushed commits\n' >&2
     return 1
@@ -372,11 +392,16 @@ do_whitespace() {
 }
 
 do_print() {
-  local r
+  local r sha
   for r in "${RANGES[@]}"; do
     printf '%s\n' "$r"
   done
-  [ "${#RANGES[@]}" -gt 0 ] || note "no ranges (deletion-only or no-op push)"
+  for sha in "${ROOTS[@]}"; do
+    printf '%s %s\n' "$EMPTY_TREE" "$sha"
+  done
+  if [ "${#RANGES[@]}" -eq 0 ] && [ "${#ROOTS[@]}" -eq 0 ]; then
+    note "no ranges (deletion-only or no-op push)"
+  fi
 }
 
 # Paths whose change invalidates the compiled gate. Kept in sync with the
@@ -385,19 +410,23 @@ do_print() {
 RELEVANT_RE='^(CMakeLists\.txt|CMakePresets\.json|cmake/|src/|include/|experiments/|tests/|tools/|lefthook\.yml$|\.github/workflows/|third_party/(sluice|duckdb)$)'
 
 do_files() {
-  local r base head
+  local r base head sha out=""
   for r in "${RANGES[@]}"; do
     base="${r% *}"
     head="${r##* }"
-    git diff --name-only "$base" "$head" || return 1
-  done | sort -u
+    out+="$(git diff --name-only "$base" "$head")"$'\n' || return 1
+  done
+  for sha in "${ROOTS[@]}"; do
+    out+="$(git diff --name-only "$EMPTY_TREE" "$sha")"$'\n' || return 1
+  done
+  printf '%s' "$out" | sed '/^$/d' | sort -u
 }
 
 # Exit semantics are tri-state on purpose: 0 = build needed, 1 = docs-only,
 # 2 = undeterminable (must fail the gate, never skip it).
 do_relevant() {
   local files
-  if [ "${#RANGES[@]}" -eq 0 ]; then
+  if [ "${#RANGES[@]}" -eq 0 ] && [ "${#ROOTS[@]}" -eq 0 ]; then
     note "relevant: deletion-only or no-op push; build gate not needed"
     return 1
   fi
