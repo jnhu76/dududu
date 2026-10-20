@@ -52,6 +52,9 @@ add_test(NAME sluice.sdk.stale-sync
 
 # End-to-end: a file planted in the real staging tree cannot survive the
 # install into the SDK. Reruns the real xmake chain; slow only on a cold tree.
+# RUN_SERIAL: this test wipes and rewrites the shared SDK staging tree; it
+# must never overlap another test that reads the same prefix, even if someone
+# later raises the CTest parallelism above the gate's --parallel 1.
 add_test(NAME sluice.sdk.install-wipe
          COMMAND ${CMAKE_COMMAND}
                  "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
@@ -59,7 +62,7 @@ add_test(NAME sluice.sdk.install-wipe
                  "-DSTAGE_DIR=${DUDUDU_BUILD_ROOT}/sluice-stage/noliburing"
                  "-DSDK_DIR=${DUDUDU_SLUICE_SDK_NOLIBURING}"
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunSluiceInstallWipe.cmake)
-set_tests_properties(sluice.sdk.install-wipe PROPERTIES TIMEOUT 1200)
+set_tests_properties(sluice.sdk.install-wipe PROPERTIES TIMEOUT 1200 RUN_SERIAL TRUE)
 
 # --- DuckDB official entry points ------------------------------------------
 if(TARGET duckdb_native)
