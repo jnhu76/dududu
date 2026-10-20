@@ -22,6 +22,23 @@ I/O path. **No performance conclusion is drawn in R0.**
 
 Details and admission rules: [`docs/experiment-matrix.md`](docs/experiment-matrix.md).
 
+## R1 standalone round: Parquet × Sluice (no DuckDB)
+
+R1 opens with a standalone workload: the Apache Parquet C++ reader decoding
+frozen fixtures through three arms — `P0` Arrow native (`ReadableFile`),
+`P1` a native `pread` wrapper, `P2` Sluice Direct (`blocking::read_at`) —
+under a correctness-first admission (oracle equivalence, fault injection,
+trace/replay) and a two-pass warm-cache benchmark protocol. DuckDB is not
+built, modified or benchmarked for this round. See
+[`experiments/parquet/`](experiments/parquet/) and
+[`benchmarks/parquet/protocol.md`](benchmarks/parquet/protocol.md).
+
+```bash
+cmake --preset parquet && cmake --build build/cmake-parquet --parallel 4
+ctest --test-dir build/cmake-parquet -R parquet --output-on-failure --parallel 1
+bash benchmarks/parquet/run-bench.sh both   # needs libarrow-dev/libparquet-dev/libbenchmark-dev
+```
+
 ## Requirements
 
 - Linux (io_uring work is Linux-only; Windows/macOS are **not** supported or

@@ -1,0 +1,35 @@
+BENCH                                     MEAN_ns    MEDIAN_ns      CV%   IO_REQ      REQ_BYTES   ERRS
+T1_meta/p0_arrow/small                      51491        51402    1.29%      n/a            n/a    n/a
+T1_meta/p1_native/small                     51102        51062    1.51%        1          65536      0
+T1_meta/p2_sluice/small                     51955        52050    1.28%        1          65536      0
+T1_meta/p0_arrow/medium                     65101        64767    1.99%      n/a            n/a    n/a
+T1_meta/p1_native/medium                    65284        64682    2.72%        1          65536      0
+T1_meta/p2_sluice/medium                    65273        65109    1.12%        1          65536      0
+T2_projection/p0_arrow/small              1501187      1510257    1.64%      n/a            n/a    n/a
+T2_projection/p1_native/small             1494051      1487337    1.91%       13        1117124      0
+T2_projection/p2_sluice/small             1500397      1489382    3.51%       13        1117124      0
+T2_projection/p0_arrow/medium            35815394     35644378    1.87%      n/a            n/a    n/a
+T2_projection/p1_native/medium           35883469     35858190    2.20%       17       31538607      0
+T2_projection/p2_sluice/medium           35860500     35816645    1.63%       17       31538607      0
+T3_fullscan/p0_arrow/small                5185013      5286054    4.36%      n/a            n/a    n/a
+T3_fullscan/p1_native/small               5197245      5190169    7.56%       43        6176197      0
+T3_fullscan/p2_sluice/small               5130995      5111086    3.80%       43        6176197      0
+T3_fullscan/p0_arrow/medium             121175218    122032127    3.00%      n/a            n/a    n/a
+T3_fullscan/p1_native/medium            121319434    121469106    3.99%       57      181996415      0
+T3_fullscan/p2_sluice/medium            121799091    121979003    3.46%       57      181996415      0
+T3_fullscan_t4/p0_arrow/medium/threads:4    296698790    284514112   16.20%      n/a            n/a    n/a
+T3_fullscan_t4/p1_native/medium/threads:4    284831188    274706852   12.40%        0              0      0
+T3_fullscan_t4/p2_sluice/medium/threads:4    282198797    280486838    9.67%        0              0      0
+Replay/native/medium                    191555734    190037560    1.86%        0              0      0
+Replay/sluice/medium                    189960508    188965537    1.40%        0              0      0
+
+attribution (mean wall time; each ratio stands alone):
+T1_meta/small            wrapper_tax=  -0.76%  sluice_effect=  +1.67%  e2e=  +0.90%
+T1_meta/medium           wrapper_tax=  +0.28%  sluice_effect=  -0.02%  e2e=  +0.26%
+T2_projection/small      wrapper_tax=  -0.48%  sluice_effect=  +0.42%  e2e=  -0.05%
+T2_projection/medium     wrapper_tax=  +0.19%  sluice_effect=  -0.06%  e2e=  +0.13%
+T3_fullscan/small        wrapper_tax=  +0.24%  sluice_effect=  -1.27%  e2e=  -1.04%
+T3_fullscan/medium       wrapper_tax=  +0.12%  sluice_effect=  +0.40%  e2e=  +0.51%
+
+replay (I/O-only; identical request trace both backends):
+  native=191.6ms sluice=190.0ms sluice/native=-0.83%

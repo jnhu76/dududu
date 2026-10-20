@@ -1,0 +1,13 @@
+DUDUDU_SHA=bfe0de14248bf3a89496b4fb23c8ca50182eb046
+SLUICE_SHA=8fdcd99c5f9a42dadfe5aa0c095bf96c756aeb01
+SLUICE_PROFILE=noliburing
+SDK_PREFIX=build/sluice-sdk/noliburing
+ARROW_VERSION=23.0.1
+PARQUET_VERSION=23.0.1
+REPS=10
+WARMUP_SECONDS=2
+KERNEL=6.18.54.1-microsoft-standard-WSL2
+DATE_UTC=2026-10-20T14:38:59Z
+COMPILER=15
+DATASET build/parquet-data/small-none.parquet c2debb4c16228e5b66c9fbfa75e543b1ecff5e3b90b075db2ef1098a5e9eb3bb 6118918
+DATASET build/parquet-data/medium-none.parquet 6116e69cf20a89b7ca8a23e4d4dbd7d3759225a68e379d4776b3727bf3c05af6 181966794

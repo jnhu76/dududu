@@ -1,0 +1,10 @@
+{
+  "dataset": "medium",
+  "compression": "none",
+  "path": "build/parquet-data/medium-none.parquet",
+  "bytes": 181966794,
+  "sha256": "6116e69cf20a89b7ca8a23e4d4dbd7d3759225a68e379d4776b3727bf3c05af6",
+  "seed": "0xD4D4D420261020",
+  "arrow_version": "23.0.1",
+  "generator": "parquet_fixture"
+}

@@ -54,7 +54,8 @@ struct GeneratedFixture {
     int64_t bytes = 0;
 };
 
-// Generates (or regenerates byte-identically) `<out_dir>/<name>.parquet`.
+// Generates (or regenerates, byte-identically for one Arrow writer
+// version — the manifest records it) `<out_dir>/<name>.parquet`.
 arrow::Result<GeneratedFixture> generate_fixture(const std::string& name,
                                                  const std::string& out_dir,
                                                  const std::string& compression);
