@@ -6,8 +6,11 @@
 # Why staging exists: `xmake install` rewrites files unconditionally, so
 # installing straight into the prefix would bump the archive mtime on every
 # build and force consumers to relink even when nothing changed. Copying with
-# copy_if_different keeps the prefix stable, and the explicit stale-file
-# removal keeps an old archive/header from surviving a target-set change.
+# copy_if_different keeps the prefix stable. Staging is wiped by the install
+# step before xmake runs (see cmake/Sluice.cmake), so the tree this script
+# reads is exactly the current version's install set: the stale-file removal
+# below is what keeps an old archive/header from surviving a target-set
+# change, and the copy cannot smuggle artifacts from an older install.
 
 if(NOT DEFINED STAGE_DIR OR NOT DEFINED SDK_DIR)
   message(FATAL_ERROR "SyncSdk.cmake requires -DSTAGE_DIR=... -DSDK_DIR=...")

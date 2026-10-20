@@ -25,7 +25,8 @@ cmake --build build/cmake --target sluice_core_consumer
          configure: xmake f -P third_party/sluice -m release --liburing=n
                     --builddir=<work>/out        (CWD = <work>, so .xmake lands there)
          build:     xmake -y sluice_core && xmake -y sluice_async
-         install:   xmake install -o <stage> sluice_core
+         install:   rm -rf <stage>                                 (staging is wiped first)
+                    xmake install -o <stage> sluice_core
                     xmake install -o <stage> sluice_async      (two calls, verified form)
          sdk_sync:  SyncSdk.cmake  <stage> -> build/sluice-sdk/noliburing
    └── imported targets Sluice::core, Sluice::async (+ *_uring variants)
@@ -41,7 +42,7 @@ Directories (all under the ignored `build/`):
 ```
 build/
 ├── sluice-work/{noliburing,liburing}/     .xmake cache + out/.objs (per profile)
-├── sluice-stage/{noliburing,liburing}/    raw xmake install output (staging)
+├── sluice-stage/{noliburing,liburing}/    raw xmake install output (wiped before each install)
 ├── sluice-sdk/{noliburing,liburing}/      the SDK prefix consumers actually use
 ├── cmake/                                 CMake/Ninja build tree for dududu
 ├── duckdb-native/<duckdb-sha>/            upstream DuckDB build tree, one per submodule SHA
@@ -83,11 +84,15 @@ objects); separate work directories make that impossible at the dududu level as
 well.
 
 **Staging plus `copy_if_different`.** `xmake install` rewrites files
-unconditionally. Installing straight into the SDK prefix would bump archive
-mtimes on every build and relink every consumer. `SyncSdk.cmake` copies only
-changed bytes, so an unchanged SDK keeps its mtime, and removes prefix files the
-new install no longer produces (a target-set change cannot leave a stale archive
-behind).
+unconditionally and never prunes. The install step therefore wipes the staging
+tree before xmake runs, so staging is always exactly the current version's
+install set. `SyncSdk.cmake` copies only changed bytes — an unchanged SDK keeps
+its mtime, so an unchanged build does not relink consumers — and removes prefix
+files the fresh install no longer produces. Without the wipe, anything left in
+staging by an older Sluice would ride the copy into the SDK, past the
+prefix-side prune (found in review B2). Proven by `sluice.sdk.stale-sync` (the
+sync contract, hermetic) and `sluice.sdk.install-wipe` (a file planted in the
+real staging tree cannot reach the SDK).
 
 **`sdk_sync` as a `BYPRODUCTS` step.** The SDK archives are outputs of a named
 ExternalProject step. Without a declared producer, Ninja evaluates a consumer's

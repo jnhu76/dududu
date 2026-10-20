@@ -99,6 +99,8 @@ cd build/sluice-work/noliburing
 # lands the objects one directory deeper than intended.
 xmake f -P ../../../third_party/sluice -m release --liburing=n -y --builddir=out
 xmake -y sluice_core && xmake -y sluice_async
+# staging is wiped first so it is always exactly this version's install set
+cmake -E rm -rf ../../sluice-stage/noliburing
 xmake install -o ../../sluice-stage/noliburing sluice_core
 xmake install -o ../../sluice-stage/noliburing sluice_async
 ```

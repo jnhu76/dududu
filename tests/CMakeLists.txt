@@ -36,6 +36,25 @@ add_test(NAME sluice.sdk.header-boundary
                  -DSDK_DIR=${DUDUDU_SLUICE_SDK_NOLIBURING}
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifySdkBoundary.cmake)
 
+# --- SDK sync and install hygiene -------------------------------------------
+# Hermetic: the sync contract itself, on scratch directories.
+add_test(NAME sluice.sdk.stale-sync
+         COMMAND ${CMAKE_COMMAND}
+                 "-DSYNC_SDK_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/SyncSdk.cmake"
+                 "-DFIXTURE_ROOT=${CMAKE_BINARY_DIR}/fixture/sluice-stale-sync"
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunSdkStaleSync.cmake)
+
+# End-to-end: a file planted in the real staging tree cannot survive the
+# install into the SDK. Reruns the real xmake chain; slow only on a cold tree.
+add_test(NAME sluice.sdk.install-wipe
+         COMMAND ${CMAKE_COMMAND}
+                 "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+                 "-DTARGET=sluice_sdk_noliburing"
+                 "-DSTAGE_DIR=${DUDUDU_BUILD_ROOT}/sluice-stage/noliburing"
+                 "-DSDK_DIR=${DUDUDU_SLUICE_SDK_NOLIBURING}"
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunSluiceInstallWipe.cmake)
+set_tests_properties(sluice.sdk.install-wipe PROPERTIES TIMEOUT 1200)
+
 # --- DuckDB official entry points ------------------------------------------
 if(TARGET duckdb_native)
   # DUDUDU_DUCKDB_BIN_DIR is exported by cmake/DuckDB.cmake and is

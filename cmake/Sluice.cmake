@@ -80,7 +80,15 @@ function(dududu_add_sluice_profile profile_name liburing_enabled)
         "cd '${work_dir}' && '${DUDUDU_XMAKE_EXECUTABLE}' -y sluice_core && '${DUDUDU_XMAKE_EXECUTABLE}' -y sluice_async"
     INSTALL_COMMAND
       "${DUDUDU_BASH_EXECUTABLE}" -c
-        "cd '${work_dir}' && '${DUDUDU_XMAKE_EXECUTABLE}' install -o '${stage_dir}' sluice_core && '${DUDUDU_XMAKE_EXECUTABLE}' install -o '${stage_dir}' sluice_async"
+        # The staging tree must be a pure function of this install. `xmake
+        # install` writes without pruning, so anything left in staging — a
+        # header a future Sluice no longer installs, or anything else — would
+        # survive here and then ride SyncSdk's copy into the consumer SDK,
+        # past the prefix-side prune. Wipe first; the sync step then sees an
+        # authoritative install set and can prune the SDK against it.
+        # (Review B2: proven by tests `sluice.sdk.install-wipe` and
+        # `sluice.sdk.stale-sync`.)
+        "cd '${work_dir}' && '${CMAKE_COMMAND}' -E rm -rf '${stage_dir}' && '${DUDUDU_XMAKE_EXECUTABLE}' install -o '${stage_dir}' sluice_core && '${DUDUDU_XMAKE_EXECUTABLE}' install -o '${stage_dir}' sluice_async"
     # BUILD_BYPRODUCTS is deliberately NOT set here: the SDK archives are
     # produced by the `sdk_sync` step below, and a file may have only one
     # producing rule. Declaring them there is what makes Ninja aware that a
