@@ -65,10 +65,17 @@ Mechanism and rationale are in `docs/build-boundary.md`; the evidence:
 
 - Two ExternalProjects, one per profile, each with its own xmake work directory,
   staging directory and SDK prefix. `xmake f -P third_party/sluice -m release
-  --liburing=<n|y> -y --builddir=<work>/out` runs with `CWD=<work>`, because
-  xmake writes `.xmake` into the invocation directory. Verified: after a full
-  build, `git -C third_party/sluice status --porcelain --ignored` is empty and
-  `.xmake` exists only under `build/sluice-work/<profile>/`.
+  --liburing=<n|y> -y --builddir=out` runs with `CWD=<work>`, because xmake
+  writes `.xmake` into the invocation directory. The builddir is relative on
+  purpose: xmake stores a relative value against the project dir but resolves
+  the stored value against the invocation CWD, so an absolute path put the
+  objects in `build/build/sluice-work/<profile>/out` (found in review, fixed).
+  Objects now sit at `build/sluice-work/<profile>/out/.objs`, 11 per profile.
+  Verified: after a full build, `git -C third_party/sluice status --porcelain`
+  is empty and `.xmake` exists only under `build/sluice-work/<profile>/`. The one exception is
+  `compile_commands.json`, which Sluice's own `xmake.lua` regenerates in the
+  project root via `plugin.compile_commands.autoupdate` and its own `.gitignore`
+  ignores; see `docs/build-boundary.md`.
 - Install is the two-call form the upstream verifier uses
   (`xmake install -o <stage> sluice_core` then `... sluice_async`).
 - The SDK prefix holds exactly 11 headers + 2 archives per profile:

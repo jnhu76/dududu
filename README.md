@@ -54,6 +54,14 @@ Rules:
 - Upgrading a dependency is an explicit commit that records old SHA → new SHA and
   re-verifies build + correctness.
 - The DuckDB SHA is the tag's commit, not the release page's `target_commitish`.
+- `--depth 1` clones carry no tags, so `git describe` in such a checkout fails
+  even though the commit is right. Verify the pin by SHA, or fetch the tag:
+
+```bash
+git submodule status                                   # both SHAs, authoritative
+git -C third_party/duckdb fetch --tags --depth 1 origin
+git -C third_party/duckdb describe --tags --exact-match  # only after the fetch
+```
 
 ## Build and test
 
@@ -86,7 +94,10 @@ Sluice is built by **its own xmake project**, never by a second CMake definition
 ```bash
 # what cmake/Sluice.cmake does, per profile
 cd build/sluice-work/noliburing
-xmake f -P ../../../third_party/sluice -m release --liburing=n -y --builddir=$PWD/out
+# --builddir is relative on purpose: xmake stores a relative value against the
+# project dir but resolves it against the invocation CWD, so an absolute path
+# lands the objects one directory deeper than intended.
+xmake f -P ../../../third_party/sluice -m release --liburing=n -y --builddir=out
 xmake -y sluice_core && xmake -y sluice_async
 xmake install -o ../../sluice-stage/noliburing sluice_core
 xmake install -o ../../sluice-stage/noliburing sluice_async

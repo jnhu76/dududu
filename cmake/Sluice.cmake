@@ -69,7 +69,12 @@ function(dududu_add_sluice_profile profile_name liburing_enabled)
         -m release
         "--liburing=${uring_opt}"
         -y
-        "--builddir=${work_dir}/out"
+        # Relative, not absolute. xmake rewrites a relative --builddir against
+        # the *project* dir when it stores it, but resolves the stored value
+        # against the *invocation* CWD when it builds. With an absolute path
+        # those two disagree and objects land in <build>/build/sluice-work/...;
+        # "out" is resolved once, against the work dir that is already the CWD.
+        "--builddir=out"
     BUILD_COMMAND
       "${DUDUDU_BASH_EXECUTABLE}" -c
         "cd '${work_dir}' && '${DUDUDU_XMAKE_EXECUTABLE}' -y sluice_core && '${DUDUDU_XMAKE_EXECUTABLE}' -y sluice_async"
