@@ -27,24 +27,6 @@ void IoCounters::observe_read_at(uint64_t offset, uint64_t requested, uint64_t r
     ++size_hist[bucket];
 }
 
-void IoCounters::merge(const IoCounters& other) {
-    read_at_calls += other.read_at_calls;
-    requested_bytes += other.requested_bytes;
-    returned_bytes += other.returned_bytes;
-    read_errors += other.read_errors;
-    opens += other.opens;
-    closes += other.closes;
-    if (other.min_offset < min_offset) {
-        min_offset = other.min_offset;
-    }
-    if (other.max_offset > max_offset) {
-        max_offset = other.max_offset;
-    }
-    for (size_t i = 0; i < size_hist.size(); ++i) {
-        size_hist[i] += other.size_hist[i];
-    }
-}
-
 // --- CountingBackend --------------------------------------------------------
 
 arrow::Status CountingBackend::open(const std::string& path) {

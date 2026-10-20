@@ -55,8 +55,17 @@ class IoBackend {
 std::unique_ptr<IoBackend> make_native_backend();
 std::unique_ptr<IoBackend> make_sluice_backend();
 
+// No backend exists for P0 by construction — wrapping Arrow's own file would
+// stop it being the native baseline. A null return for p0_arrow (checked by
+// AdapterFile::open) means an arm can never be silently substituted by
+// another one.
 inline std::unique_ptr<IoBackend> make_backend(Arm arm) {
-    return arm == Arm::p1_native ? make_native_backend() : make_sluice_backend();
+    switch (arm) {
+    case Arm::p1_native: return make_native_backend();
+    case Arm::p2_sluice: return make_sluice_backend();
+    case Arm::p0_arrow: break;
+    }
+    return nullptr;
 }
 
 // Shared argument contract for both backends, so P1 and P2 reject (or accept)
@@ -64,8 +73,9 @@ inline std::unique_ptr<IoBackend> make_backend(Arm arm) {
 arrow::Status validate_read_args(int64_t offset, int64_t nbytes);
 
 // Cumulative I/O observability gathered by the counting decorator. Plain
-// integers: one workload run is single-threaded; the 4-thread benchmark
-// aggregates under a mutex in the benchmark layer.
+// integers: one workload run is single-threaded. The 4-thread benchmark
+// reports time only and uses per-iteration private handles, so counters are
+// never shared across threads.
 struct IoCounters {
     uint64_t read_at_calls = 0;
     uint64_t requested_bytes = 0;
@@ -80,7 +90,6 @@ struct IoCounters {
     std::array<uint64_t, 33> size_hist{};
 
     void observe_read_at(uint64_t offset, uint64_t requested, uint64_t returned, bool ok);
-    void merge(const IoCounters& other);
 };
 
 } // namespace dududu::parquet

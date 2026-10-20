@@ -58,6 +58,31 @@ class SluiceDirectBackend final : public IoBackend {
             return sluice_error_status(opened.error(), "open");
         }
         file_.emplace(std::move(opened).value());
+        // Same early rejection as P1's fstat: only regular files are
+        // experiment inputs, on both arms, at open time.
+        auto info = sluice::blocking::file_info(*file_);
+        if (!info.has_value()) {
+            auto err = sluice_error_status(info.error(), "file_info");
+            file_.reset();
+            return err;
+        }
+        if (info.value().kind != sluice::FileKind::regular) {
+            file_.reset();
+            return arrow::Status::Invalid("p2-sluice: not a regular file: ", path);
+        }
+        // One size observation at open, like P1's fstat snapshot: GetSize is
+        // then syscall-free on both instrumented arms.
+        auto sz = sluice::blocking::size(*file_);
+        if (!sz.has_value()) {
+            auto err = sluice_error_status(sz.error(), "size");
+            file_.reset();
+            return err;
+        }
+        if (sz.value() > static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+            file_.reset();
+            return arrow::Status::Invalid("p2-sluice: file exceeds int64 size");
+        }
+        size_ = static_cast<int64_t>(sz.value());
         closed_ = false;
         return arrow::Status::OK();
     }
@@ -66,14 +91,7 @@ class SluiceDirectBackend final : public IoBackend {
         if (closed_ || !file_.has_value()) {
             return arrow::Status::Invalid("p2-sluice: size on closed file");
         }
-        auto sz = sluice::blocking::size(*file_);
-        if (!sz.has_value()) {
-            return sluice_error_status(sz.error(), "size");
-        }
-        if (sz.value() > static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
-            return arrow::Status::Invalid("p2-sluice: file exceeds int64 size");
-        }
-        return static_cast<int64_t>(sz.value());
+        return size_;
     }
 
     arrow::Result<int64_t> read_at(int64_t offset, int64_t nbytes, void* out) override {
@@ -117,6 +135,7 @@ class SluiceDirectBackend final : public IoBackend {
 
   private:
     std::optional<sluice::File> file_;
+    int64_t size_ = -1;
     bool closed_ = true;
 };
 

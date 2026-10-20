@@ -28,11 +28,6 @@ class CountingBackend final : public IoBackend {
     const char* name() const override { return inner_->name(); }
 
     const IoCounters& counters() const { return counters_; }
-    IoCounters take_counters() {
-        auto c = counters_;
-        counters_ = IoCounters{};
-        return c;
-    }
 
   private:
     std::unique_ptr<IoBackend> inner_;
