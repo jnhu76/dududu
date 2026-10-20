@@ -16,13 +16,19 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(DUDUDU_BUILD_SLUICE_SDK "Build the Sluice static SDK through xmake" ON)
+option(DUDUDU_BUILD_DUCKDB_NATIVE "Build the unmodified DuckDB native baseline" ON)
 option(DUDUDU_BUILD_TESTS "Configure CTest consumers and smoke tests" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Sluice)
+include(DuckDB)
 
 if(DUDUDU_BUILD_SLUICE_SDK)
   dududu_add_sluice()
+endif()
+
+if(DUDUDU_BUILD_DUCKDB_NATIVE)
+  dududu_add_duckdb_native()
 endif()
 
 if(DUDUDU_BUILD_TESTS)
