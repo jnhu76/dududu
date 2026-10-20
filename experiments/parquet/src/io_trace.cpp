@@ -39,34 +39,75 @@ std::string esc(const std::string& s) {
     return out;
 }
 
-std::string_view json_string_value(std::string_view line, std::string_view key) {
+// The trace reader below is fail-closed: a missing or malformed key is a
+// parse failure, never a silent zero/empty fallback. The on-disk format is
+// JSON Lines (one JSON object per line), so every accepted line must also
+// look like an object. Structural JSON validity beyond these field checks is
+// enforced independently of this parser by `benchmarks/parquet/validate-trace.sh`
+// (jq) in the protocol; the two layers must not share code.
+
+bool require_object_line(std::string_view line) {
+    return !line.empty() && line.front() == '{' && line.back() == '}';
+}
+
+std::string_view json_string_value(std::string_view line, std::string_view key, bool* found) {
     const std::string needle = "\"" + std::string(key) + "\":\"";
     const auto p = line.find(needle);
     if (p == std::string_view::npos) {
+        *found = false;
         return {};
     }
     const auto start = p + needle.size();
     const auto end = line.find('"', start);
     if (end == std::string_view::npos) {
+        *found = false;
         return {};
     }
+    *found = true;
     return line.substr(start, end - start);
 }
 
-std::uint64_t json_uint_value(std::string_view line, std::string_view key,
-                              std::uint64_t fallback) {
+bool json_uint_value(std::string_view line, std::string_view key, std::uint64_t* out) {
     const std::string needle = "\"" + std::string(key) + "\":";
     const auto p = line.find(needle);
     if (p == std::string_view::npos) {
-        return fallback;
+        return false;
     }
     const auto start = p + needle.size();
     std::uint64_t v = 0;
     const auto [ptr, ec] = std::from_chars(line.data() + start, line.data() + line.size(), v);
-    if (ec != std::errc()) {
-        return fallback;
+    if (ec != std::errc() || ptr == line.data() + start) {
+        return false;
     }
-    return v;
+    *out = v;
+    return true;
+}
+
+bool json_bool_value(std::string_view line, std::string_view key, bool* out) {
+    const std::string t = "\"" + std::string(key) + "\":true";
+    const std::string f = "\"" + std::string(key) + "\":false";
+    if (line.find(t) != std::string_view::npos) {
+        *out = true;
+        return true;
+    }
+    if (line.find(f) != std::string_view::npos) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+bool is_lower_hex(std::string_view s) {
+    if (s.size() != 64) {
+        return false;
+    }
+    for (char c : s) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Strict: an unknown workload name must fail the capture, never fall back
@@ -98,7 +139,7 @@ std::string serialize_trace(const TraceFile& trace) {
     out += ",\"dataset_path\":\"" + esc(trace.dataset_path) + "\"";
     out += ",\"workload\":\"" + esc(trace.workload) + "\"";
     out += ",\"arm\":\"" + esc(trace.arm) + "\"";
-    out += ",\"file_size\":" + std::to_string(trace.file_size) + "\n";
+    out += ",\"file_size\":" + std::to_string(trace.file_size) + "}\n";
     for (const TraceRequest& r : trace.requests) {
         out += "{\"i\":" + std::to_string(r.index) + ",\"offset\":" +
                std::to_string(r.offset) + ",\"requested\":" + std::to_string(r.requested) +
@@ -115,36 +156,82 @@ bool parse_trace(std::string_view text, TraceFile* out) {
     *out = TraceFile{};
     std::size_t pos = 0;
     bool first = true;
+    std::size_t expect_index = 0;
     while (pos < text.size()) {
         const auto eol = text.find('\n', pos);
         if (eol == std::string_view::npos) {
-            break;
+            return false; // unterminated trailing line: truncated file, not a trace
         }
         const std::string_view line = text.substr(pos, eol - pos);
         pos = eol + 1;
         if (line.empty()) {
-            continue;
+            return false; // JSON Lines has no blank records
+        }
+        if (!require_object_line(line)) {
+            return false;
         }
         if (first) {
             first = false;
-            if (json_string_value(line, "type") != kTraceType ||
-                json_uint_value(line, "version", 0) != static_cast<std::uint64_t>(kTraceVersion)) {
+            bool found = false;
+            std::uint64_t version = 0;
+            if (json_string_value(line, "type", &found) != kTraceType || !found) {
                 return false;
             }
-            out->dataset_sha = std::string(json_string_value(line, "dataset_sha"));
-            out->dataset_path = std::string(json_string_value(line, "dataset_path"));
-            out->workload = std::string(json_string_value(line, "workload"));
-            out->arm = std::string(json_string_value(line, "arm"));
-            out->file_size = json_uint_value(line, "file_size", 0);
+            if (!json_uint_value(line, "version", &version) ||
+                version != static_cast<std::uint64_t>(kTraceVersion)) {
+                return false;
+            }
+            const std::string_view dataset_sha = json_string_value(line, "dataset_sha", &found);
+            if (!found || !is_lower_hex(dataset_sha)) {
+                return false;
+            }
+            const std::string_view dataset_path =
+                json_string_value(line, "dataset_path", &found);
+            if (!found || dataset_path.empty()) {
+                return false;
+            }
+            const std::string_view workload = json_string_value(line, "workload", &found);
+            if (!found || workload.empty()) {
+                return false;
+            }
+            const std::string_view arm = json_string_value(line, "arm", &found);
+            if (!found || arm.empty()) {
+                return false;
+            }
+            std::uint64_t file_size = 0;
+            if (!json_uint_value(line, "file_size", &file_size) || file_size == 0) {
+                return false;
+            }
+            out->dataset_sha = std::string(dataset_sha);
+            out->dataset_path = std::string(dataset_path);
+            out->workload = std::string(workload);
+            out->arm = std::string(arm);
+            out->file_size = file_size;
             continue;
         }
         TraceRequest r;
-        r.index = json_uint_value(line, "i", 0);
-        r.offset = json_uint_value(line, "offset", 0);
-        r.requested = json_uint_value(line, "requested", 0);
-        r.returned = json_uint_value(line, "returned", 0);
-        r.ok = line.find("\"ok\":true") != std::string_view::npos;
+        if (!json_uint_value(line, "i", &r.index) || r.index != expect_index) {
+            return false; // indices are dense and zero-based
+        }
+        if (!json_uint_value(line, "offset", &r.offset) ||
+            !json_uint_value(line, "requested", &r.requested) ||
+            !json_uint_value(line, "returned", &r.returned)) {
+            return false;
+        }
+        if (!json_bool_value(line, "ok", &r.ok)) {
+            return false;
+        }
+        if (r.requested == 0) {
+            return false; // the reader never issues empty reads; a zero is corruption
+        }
+        if (r.returned > r.requested) {
+            return false;
+        }
+        if (r.offset > out->file_size || r.offset + r.returned > out->file_size) {
+            return false; // reads live inside the captured file
+        }
         out->requests.push_back(r);
+        ++expect_index;
     }
     return !first;
 }

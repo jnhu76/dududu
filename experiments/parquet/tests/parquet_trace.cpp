@@ -148,6 +148,68 @@ int main() {
         }
     }
 
+    // --- parser admission: malformed traces must fail closed ------------------
+    // The capture above must also survive its own serialization unchanged.
+    {
+        TraceFile rt;
+        CHECK(parse_trace(text1, &rt));
+        CHECK(serialize_trace(rt) == text1);
+    }
+    {
+        const std::string digest(64, 'a'); // shape of a sha256 hex digest
+        const std::string header =
+            "{\"type\":\"dududu-parquet-io-trace\",\"version\":1,"
+            "\"dataset_sha\":\"" +
+            digest +
+            "\",\"dataset_path\":\"/tmp/x.parquet\",\"workload\":\"t3_full\","
+            "\"arm\":\"p1-native\",\"file_size\":1000}\n";
+        const std::string req =
+            "{\"i\":0,\"offset\":0,\"requested\":64,\"returned\":64,\"ok\":true}\n";
+
+        TraceFile sink;
+        TraceFile good;
+        CHECK(parse_trace(header + req, &good));
+        CHECK(good.file_size == 1000 && good.requests.size() == 1);
+
+        // The exact regression this guards: a header line that lost its
+        // closing brace is not a JSON object and must be rejected.
+        CHECK(!parse_trace(header.substr(0, header.size() - 2) + "\n" + req, &sink));
+        // Missing required header fields.
+        CHECK(!parse_trace(
+            "{\"type\":\"dududu-parquet-io-trace\",\"version\":1,\"dataset_sha\":\"" +
+                digest +
+                "\",\"dataset_path\":\"/tmp/x.parquet\",\"workload\":\"t3_full\","
+                "\"arm\":\"p1-native\"}\n" +
+                req,
+            &sink));
+        CHECK(!parse_trace(
+            "{\"type\":\"dududu-parquet-io-trace\",\"version\":1,\"dataset_sha\":\"abc\","
+            "\"dataset_path\":\"/tmp/x.parquet\",\"workload\":\"t3_full\","
+            "\"arm\":\"p1-native\",\"file_size\":1000}\n" +
+                req,
+            &sink));
+        // Request records: missing field, non-dense index, impossible counts,
+        // out-of-file offsets.
+        CHECK(!parse_trace(
+            header + "{\"i\":0,\"offset\":0,\"requested\":64,\"ok\":true}\n", &sink));
+        CHECK(!parse_trace(
+            header +
+                "{\"i\":1,\"offset\":0,\"requested\":64,\"returned\":64,\"ok\":true}\n",
+            &sink));
+        CHECK(!parse_trace(
+            header + "{\"i\":0,\"offset\":0,\"requested\":8,\"returned\":9,\"ok\":true}\n",
+            &sink));
+        CHECK(!parse_trace(
+            header +
+                "{\"i\":0,\"offset\":2000,\"requested\":8,\"returned\":8,\"ok\":true}\n",
+            &sink));
+        // Structural: unterminated final line, blank line between records.
+        CHECK(!parse_trace(
+            header + "{\"i\":0,\"offset\":0,\"requested\":8,\"returned\":8,\"ok\":true}",
+            &sink));
+        CHECK(!parse_trace(header + "\n" + req, &sink));
+    }
+
     if (failures != 0) {
         std::fprintf(stderr, "parquet_trace_test: %d failure(s)\n", failures);
         return 1;
