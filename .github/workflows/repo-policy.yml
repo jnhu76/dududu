@@ -15,7 +15,7 @@ name: Repository Policy
 
 on:
   pull_request:
-    types: [opened, edited, synchronize]
+    types: [opened, edited, synchronize, reopened]
 
 permissions:
   contents: read
@@ -35,6 +35,7 @@ jobs:
         with:
           fetch-depth: 1
           submodules: false
+          persist-credentials: false
 
       - name: Commit checker self-test
         run: bash tools/check-commit.sh --self-test
