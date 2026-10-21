@@ -32,10 +32,11 @@ provenance chain). Neither arm can fall back to the other.
 
 ## Reader and workload configuration (frozen)
 
-* Arrow/Parquet 23.0.1 (Ubuntu `resolute` archive packages `23.0.1-9`),
-  Google Benchmark 1.9.1 (`1.9.1-1build1`, shipped as a debug-built system
-  library — uniform across arms, but it inflates absolute constants),
-  GCC 15.2.0, CMake 4.2.3, Ninja 1.13.2, Release.
+* Canonical host for this round's receipts: the dedicated benchmark server
+  `E5` — see Host disclosure. Arrow/Parquet 23.0.1 (Fedora
+  `libarrow-devel` / `parquet-libs-devel` `23.0.1-1.fc44`), Google
+  Benchmark 1.9.5 (`1.9.5-12.fc44`), GCC 16.2.1, CMake 4.3.0, Ninja
+  1.13.2, Release.
 * Sluice: submodule `8fdcd99c5f9a42dadfe5aa0c095bf96c756aeb01`, `noliburing`
   profile, installed SDK consumed through `cmake/Sluice.cmake`
   (`Sluice::core`); no Sluice source change.
@@ -62,7 +63,9 @@ into the ignored `build/parquet-data/`. Their identity authority is not the
 sidecar the generator writes next to them — both live under mutable
 `build/` — but the frozen records committed with the evidence
 (`results/r1/manifest-{small,medium}-none.json`): a dataset is admitted
-only if its bytes and size still match that record.
+only if its bytes and size still match that record. A host that has never
+seen the dataset regenerates it from the fixed seed and must land on the
+same bytes; the cross-machine match is itself part of the evidence.
 
 | dataset | bytes | sha256 |
 |---|---|---|
@@ -180,7 +183,12 @@ controls.
 
 ## Host disclosure
 
-Verified host is Ubuntu 26.04 on WSL2 (kernel 6.18.54.1-microsoft-standard,
-8 cores, 15 GB). Numbers from this host are correctness-and-exploration
-evidence for the synchronous path; they are not promoted to native-Linux
-production conclusions, and no cold-cache or native-NVMe claim is made.
+The committed receipts are produced on the dedicated benchmark server `E5`:
+Fedora Linux 44, native kernel 7.2.9-201.fc44.x86_64, 20 cores, 62 GB RAM,
+idle apart from the protocol. Earlier rounds ran on an Ubuntu 26.04 WSL2
+desktop (kernel 6.18.54.1-microsoft-standard, 8 cores, 15 GB); that host
+was demoted after several protocol runs had to be discarded because
+unrelated concurrent builds saturated it (recorded in results-schema.md).
+Numbers remain correctness-and-exploration evidence for the synchronous
+path on a warm cache; no cold-cache or production-I/O claim is made, and
+cross-host comparability with the WSL2 rounds is not asserted.
