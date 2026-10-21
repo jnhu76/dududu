@@ -10,10 +10,15 @@
 #   * every expected benchmark (workload x arm x dataset, the 4-thread full
 #     scan when medium ran, both replays when a trace was captured) is
 #     present, and NO unexpected iteration entries exist;
+#   * the FULL entry multiset closes over that roster: every (name, run_type,
+#     aggregate_name) triple must belong to it, so a ghost aggregate (which
+#     summarize.sh would enumerate alongside the admitted ones), a duplicate
+#     entry or a mislabeled aggregate_name is an admission failure;
 #   * each has exactly <reps> iteration entries whose repetition_index
 #     covers 0..reps-1, with positive real_time and non-negative cpu_time;
-#   * each has exactly one mean/median/stddev/cv aggregate with a positive
-#     real_time;
+#   * each has exactly one mean/median/stddev/cv aggregate, with positive
+#     mean/median times and non-negative stddev/cv (an all-equal sample set
+#     is zero-variance, not broken);
 #   * no entry anywhere reported error_occurred (a SkipWithError or a
 #     benchmark-filtered-out run is an admission failure, not a gap).
 #
@@ -70,7 +75,30 @@ jq -e --argjson roster "$roster_json" \
     "$json" >/dev/null \
     || fail "$json: iteration entries do not match the required roster for mode=$mode trace=$with_trace"
 
-# 3. Per benchmark: exactly <reps> clean samples with dense repetition
+# 3. Closure: the whole entry multiset must be exactly the roster expanded.
+#    A ghost aggregate ("Ghost/extra_mean") passes every per-name check —
+#    yet summarize.sh enumerates every aggregate it finds, so anything
+#    outside the roster (extra aggregate, duplicate entry, aggregate_name
+#    that does not match the name suffix) is an admission failure.
+expected_sigs=$(for b in "${roster[@]}"; do
+                    for ((i = 0; i < reps; i++)); do
+                        printf '%s\titeration\t\n' "$b"
+                    done
+                    for s in mean median stddev cv; do
+                        printf '%s_%s\taggregate\t%s\n' "$b" "$s" "$s"
+                    done
+                done | sort)
+actual_sigs=$(jq -r '.benchmarks[]
+                     | [(.name // ""), (.run_type // ""), (.aggregate_name // "")] | @tsv' \
+                    "$json" | sort) || fail "$json: not parseable JSON"
+delta=$(diff <(printf '%s\n' "$expected_sigs") <(printf '%s\n' "$actual_sigs") \
+             | head -20) || true
+if [[ -n "$delta" ]]; then
+    printf '%s\n' "  roster closure delta ('<' expected, '>' present):" "$delta" >&2
+    fail "$json: benchmark entries do not close over the required roster for mode=$mode trace=$with_trace"
+fi
+
+# 4. Per benchmark: exactly <reps> clean samples with dense repetition
 #    indices and positive times, plus exactly one of each aggregate.
 per_bench='
 . as $root

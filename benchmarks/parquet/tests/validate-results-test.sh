@@ -93,6 +93,19 @@ jq '.benchmarks += [{name: "T9_ghost/p1_native/small", run_type: "iteration",
     "$tmp/valid.json" > "$tmp/extra.json"
 expect_reject "unexpected extra benchmark" "$tmp/extra.json" both "$REPS" --trace
 
+jq '.benchmarks += [{name: "Ghost/extra_mean", run_type: "aggregate",
+                     aggregate_name: "mean", real_time: 100}]' \
+    "$tmp/valid.json" > "$tmp/ghost-agg.json"
+expect_reject "aggregate outside the roster" "$tmp/ghost-agg.json" both "$REPS" --trace
+
+jq '.benchmarks += [.benchmarks[] | select(.name == "T1_meta/p0_arrow/small_mean")]' \
+    "$tmp/valid.json" > "$tmp/dup-agg.json"
+expect_reject "duplicated aggregate entry" "$tmp/dup-agg.json" both "$REPS" --trace
+
+jq '(.benchmarks[] | select(.name == "T2_projection/p1_native/medium_mean")
+     | .aggregate_name) = "median"' "$tmp/valid.json" > "$tmp/map-agg.json"
+expect_reject "aggregate_name mislabeled" "$tmp/map-agg.json" both "$REPS" --trace
+
 head -c 400 "$tmp/valid.json" > "$tmp/trunc.json"
 expect_reject "truncated JSON" "$tmp/trunc.json" both "$REPS" --trace
 
