@@ -9,6 +9,9 @@
 #     never to the sidecar the generator writes next to the dataset — a
 #     dataset that drifts together with its sidecar must regenerate, and a
 #     generator whose output misses the frozen record fails the protocol;
+#   * the manifest records the exact build artifacts (three executables, the
+#     staged Sluice libraries) and refuses to exist if any of them is
+#     missing, and each admitted result appends its digest to it;
 #   * the manifest is written only after every selected dataset exists, so
 #     an empty build can never produce a manifest without its DATASET lines.
 set -u
@@ -28,8 +31,13 @@ source "$repo/benchmarks/parquet/run-bench.sh"
 data_dir="$tmp/data"
 results_dir="$tmp/results"
 frozen_dir="$tmp/frozen"
+build_dir="$tmp/build"
+sdk_prefix="$tmp/sdk"
 fixture="$tmp/stub-fixture"
-mkdir -p "$data_dir" "$results_dir" "$frozen_dir"
+tracer="$build_dir/experiments/parquet/parquet_trace"
+bench="$build_dir/experiments/parquet/parquet_bench"
+mkdir -p "$data_dir" "$results_dir" "$frozen_dir" \
+    "$build_dir/experiments/parquet" "$sdk_prefix/lib"
 
 fails=0
 cases=0
@@ -164,6 +172,23 @@ freeze medium
 rm -f "$data_dir"/medium-none.parquet "$data_dir"/manifest-medium-none.json
 ensure_fixture medium >/dev/null
 
+# --- build-artifact provenance ------------------------------------------------
+: > "$build_dir/experiments/parquet/parquet_fixture"
+: > "$build_dir/experiments/parquet/parquet_trace"
+: > "$build_dir/experiments/parquet/parquet_bench"
+chmod +x "$build_dir"/experiments/parquet/parquet_{fixture,trace,bench}
+: > "$sdk_prefix/lib/libsluice_core.a"
+: > "$sdk_prefix/lib/libsluice_async.a"
+
+mv "$bench" "$tmp/bench.bak"
+if require_binaries 2>/dev/null; then
+    check "missing executable fails the binary check" 'false'
+else
+    check "missing executable fails the binary check" 'true'
+fi
+mv "$tmp/bench.bak" "$bench"
+check "complete executables pass the binary check" 'require_binaries'
+
 # --- manifest completeness (the empty-build regression) ----------------------
 # The selected dataset is absent (the empty-build state): refusing is the
 # behavior under test; the pre-fix script would have emitted the manifest
@@ -195,9 +220,45 @@ if write_manifest small medium; then
         "grep -q \"DATASET .*/small-none.parquet $small_sha \" \"\$manifest\""
     check "manifest records the trace artifact" \
         '[[ "$(grep -c "^TRACE " "$manifest")" == 1 ]]'
+    check "manifest records the three build executables" \
+        '[[ "$(grep -c "^BINARY " "$manifest")" == 3 ]]'
+    check "manifest records the staged sluice libraries" \
+        '[[ "$(grep -c "^LIB " "$manifest")" == 2 ]]'
+    bench_sha=$(sha256sum "$bench" | awk '{print $1}')
+    check "manifest binary digest matches the executable" \
+        "grep -q \"BINARY .*parquet_bench $bench_sha \" \"\$manifest\""
 else
-    check "manifest succeeds with verified datasets" 'false'
+    check "manifest succeeds with verified datasets and artifacts" 'false'
 fi
+
+# --- admitted results extend the manifest -------------------------------------
+printf '{"benchmarks":[]}\n' > "$results_dir/measure-pass.json"
+result_sha=$(sha256sum "$results_dir/measure-pass.json" | awk '{print $1}')
+if record_result "$results_dir/measure-pass.json"; then
+    check "admitted result appends its digest to the manifest" \
+        "grep -q \"RESULT .*/measure-pass.json $result_sha \" \"\$results_dir/run-manifest.txt\""
+else
+    check "record_result succeeds on an admitted result" 'false'
+fi
+if record_result "$results_dir/no-such.json" 2>/dev/null; then
+    check "record_result refuses a missing result" 'false'
+else
+    check "record_result refuses a missing result" 'true'
+fi
+
+# A manifest naming a build artifact that is not there must refuse, never
+# emit a receipt with the artifact line silently omitted.
+mv "$sdk_prefix/lib/libsluice_core.a" "$tmp/lib-core.bak"
+rm -rf "$results_dir"
+mkdir -p "$results_dir"
+if write_manifest small medium 2>/dev/null; then
+    check "manifest refuses a missing build artifact" 'false'
+else
+    check "manifest refuses a missing build artifact" 'true'
+fi
+check "refused manifest writes no partial file (build artifact)" \
+    '[[ ! -f "$results_dir/run-manifest.txt" ]]'
+mv "$tmp/lib-core.bak" "$sdk_prefix/lib/libsluice_core.a"
 
 if [[ $fails -ne 0 ]]; then
     echo "run-bench-protocol-test: $fails failure(s) over $cases checks" >&2
