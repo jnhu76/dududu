@@ -115,7 +115,10 @@ per_bench='
               | [$root.benchmarks[]
                  | select(.run_type == "aggregate" and .name == ($b + "_" + $s))] as $ag
               | ($ag | length == 1)
-                and ($ag[0].real_time | type == "number" and . > 0)) | all)
+                and ($ag[0].real_time | type == "number")
+                and (if $s == "stddev" or $s == "cv"
+                     then $ag[0].real_time >= 0
+                     else $ag[0].real_time > 0 end)) | all)
     ) | all)'
 jq -e --argjson roster "$roster_json" --argjson reps "$reps" "$per_bench" "$json" >/dev/null || {
     # Diagnostics: name the first offenders instead of a bare boolean.
@@ -133,10 +136,12 @@ jq -e --argjson roster "$roster_json" --argjson reps "$reps" "$per_bench" "$json
             "$json")
         [[ "$bad" == "0" ]] || echo "  $b: $bad iteration entries with invalid times" >&2
         for s in mean median stddev cv; do
-            ag=$(jq -r --arg b "$b" --arg s "${b}_${s}" \
+            ag=$(jq -r --arg b "$b" --arg s "$s" \
                 '[.benchmarks[]
-                  | select(.run_type == "aggregate" and .name == $s)
-                  | select(.real_time | type != "number" or . <= 0)] | length' "$json")
+                  | select(.run_type == "aggregate" and .name == ($b + "_" + $s))
+                  | select((.real_time | type != "number")
+                           or ($s == ("mean", "median") and .real_time <= 0)
+                           or .real_time < 0)] | length' "$json")
             [[ "$ag" == "0" ]] || echo "  ${b}_${s}: missing or invalid aggregate" >&2
         done
     done

@@ -83,6 +83,17 @@ jq '(.benchmarks[] | select(.name == "T2_projection/p0_arrow/medium_mean")
      | .real_time) = 0' "$tmp/valid.json" > "$tmp/zero-agg.json"
 expect_reject "zero-time aggregate" "$tmp/zero-agg.json" both "$REPS" --trace
 
+# An all-equal sample set is a legal zero-variance result: its stddev and cv
+# aggregates are exactly 0. Only mean/median must stay positive.
+jq '(.benchmarks[]
+     | select(.name == "T1_meta/p1_native/small" and .run_type == "iteration")
+     | .real_time) = 100
+    | (.benchmarks[]
+       | select(.name == "T1_meta/p1_native/small_stddev"
+                or .name == "T1_meta/p1_native/small_cv")
+       | .real_time) = 0' "$tmp/valid.json" > "$tmp/zero-var.json"
+expect_pass "zero-variance sample set is legal" "$tmp/zero-var.json" both "$REPS" --trace
+
 jq '(.benchmarks[] | select(.name == "T2_projection/p2_sluice/small"
                             and .repetition_index == 0) | .real_time) = -1' \
     "$tmp/valid.json" > "$tmp/neg.json"
