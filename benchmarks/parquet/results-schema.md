@@ -5,7 +5,9 @@
 Produced under `build/parquet-results/` by `run-bench.sh`:
 
 * `warmup-pass.json`, `measure-pass.json` — Google Benchmark JSON (library
-  1.9.1). Layout: `context` (host toolchain identity), then `benchmarks[]`.
+  1.9.5 on the canonical host; 1.9.1 on the earlier WSL2 rounds — same
+  JSON schema). Layout: `context` (host toolchain identity), then
+  `benchmarks[]`.
   Per-run entries carry `name`, `aggregate_name: null`, `real_time`,
   `cpu_time`, `iterations`, and flat per-iteration counters (`rows`,
   `cells`, `columns_read`, `io_calls`, `requested_bytes`, `returned_bytes`,
@@ -56,59 +58,81 @@ rerunning the protocol at `run-manifest.txt`'s commit and compare digests.
 Each trace this round has 58 lines (header + 57 requests) over the medium
 dataset with 181996415 requested/returned bytes, and the two arms' request
 lists are identical record-for-record (checked by `validate-trace.sh`
-during the run and by CTest).
+during the run and by CTest). The E5 traces hash identically to those
+captured on the earlier WSL2 host (`a059e58f…` / `4c675626…` in both
+manifests) — the request pattern is a property of the reader and the
+dataset, not of the host.
 
 ## Frozen numbers this round (sampled pass, mean wall, host disclosed in
 protocol.md; provenance in `run-manifest.txt`)
 
+Canonical host: the benchmark server `E5` (Fedora 44, native kernel
+7.2.9, GCC 16.2.1, Arrow/Parquet 23.0.1 Fedora builds, Google Benchmark
+1.9.5). The table is the second of two full admitted executions on that
+host, twenty minutes apart; the first execution's summary is quoted in
+the stability note below.
+
 | workload | dataset | P0 | P1 | P2 | wrapper tax | sluice effect | e2e |
 |---|---|---|---|---|---|---|---|
-| T1_meta | small | 53920 ns | 53016 ns | 53581 ns | −1.68% | +1.07% | −0.63% |
-| T1_meta | medium | 66693 ns | 66625 ns | 68045 ns | −0.10% | +2.13% | +2.03% |
-| T2_projection | small | 1526124 ns | 1528653 ns | 1535428 ns | +0.17% | +0.44% | +0.61% |
-| T2_projection | medium | 37289362 ns | 36990379 ns | 36846227 ns | −0.80% | −0.39% | −1.19% |
-| T3_fullscan | small | 5425702 ns | 5337575 ns | 5526072 ns | −1.62% | +3.53% | +1.85% |
-| T3_fullscan | medium | 134530095 ns | 136788019 ns | 134088575 ns | +1.68% | −1.97% | −0.33% |
-| Replay I/O-only | medium | 198534305 ns (native) | — | 197981676 ns (sluice) | — | −0.28% | — |
+| T1_meta | small | 82455 ns | 83634 ns | 81869 ns | +1.43% | −2.11% | −0.71% |
+| T1_meta | medium | 101388 ns | 101026 ns | 101451 ns | −0.36% | +0.42% | +0.06% |
+| T2_projection | small | 2405148 ns | 2424029 ns | 2342464 ns | +0.79% | −3.36% | −2.61% |
+| T2_projection | medium | 61232037 ns | 62016705 ns | 60125553 ns | +1.28% | −3.05% | −1.81% |
+| T3_fullscan | small | 6599294 ns | 6608039 ns | 6590202 ns | +0.13% | −0.27% | −0.14% |
+| T3_fullscan | medium | 328975439 ns | 333785872 ns | 321725580 ns | +1.46% | −3.61% | −2.20% |
+| Replay I/O-only | medium | 234374777 ns (native) | — | 234756304 ns (sluice) | — | +0.16% | — |
 
-Per-benchmark CV on the sampled pass: 1.0–8.1% on the single-thread rows
-(T3/medium P1 at 8.1% is the noisy end this time). The 4-thread full-scan
-variant ran at 11–16% CV and is exploratory only. Every attribution ratio
-above is unresolved under the resolution rule below.
+Per-benchmark CV on this sampled pass: 0.15–5.6% on the single-thread
+rows (T2/small P2 at 5.6% is the noisy end), 0.9–1.3% on the exploratory
+4-thread variant. Under the resolution rule below, the ratios marked
+resolved in this single pass are T1/small (all three, small magnitudes
+against very low CVs) and T3/medium sluice effect + e2e.
 
-Run-quality note, recorded because it changed nothing but could have: the
-first protocol invocation after the review fixes ran while an unrelated
-concurrent build saturated the host (load ~13); its summary showed 17–39%
-CV and a 2.4× slower replay. It was discarded on run-quality grounds
-before any receipt was written, and the committed run above is the quiet
-re-run (same binaries, same datasets, same SHA). Both raw JSONs stayed
-out of Git per rule 6.
+Stability note, and why no arm-level performance claim is made: the
+first admitted execution on the same host, same binaries, same datasets
+resolved a **+6.85%** sluice effect on T2/medium (P1 CV 2.0%, P2 CV
+4.9%), +0.73% on T3/medium and +0.66% on T1/small. This execution
+resolves **−3.05%**, **−3.61%** and **−2.11%** on the same rows: the
+signs flip between consecutive admitted runs. Per-run resolution marks
+therefore describe within-run noise only, not stable arm properties.
+The stable instrument is the I/O-only replay over the identical request
+trace: −0.64% (first execution) and +0.16% (this one). Absolute replay
+means also drifted between the runs (246.5 ms vs 234.4 ms native), so
+absolute values are host-state dependent and cross-run comparability is
+limited to sign-stable signals.
+
+Run-quality history, recorded because it shaped this round: three
+protocol executions on the WSL2 desktop were discarded before receipts
+— 2026-10-20 and twice on 2026-10-21 — each time because an unrelated
+concurrent build saturated that host mid-pass (CV 17–39%, replay 2.4×
+slow). That history is why the canonical host moved (protocol.md, Host
+disclosure); the discarded runs and the earlier WSL2 receipts remain in
+the repository history, never presented as results.
 
 Resolution rule for the table above: a ratio is called unresolved when its
 magnitude is below the larger of the two arms' CVs. This is a descriptive
-heuristic for what this protocol can resolve, not a confidence interval,
+heuristic for what a single pass can resolve, not a confidence interval,
 significance test or statistical-equivalence claim, and it is not an upper
 bound on systematic run-order bias: the 10 repetitions of one benchmark
 execute consecutively (arms alternate per workload, not per repetition),
-so arm samples are not paired. What the evidence supports is: the observed
-differences were small relative to run-to-run variability, and no benefit
-or penalty for Sluice could be resolved under these conditions (warm
-cache, one synchronous thread, this host). It does not establish that the
-true difference is zero, and no p-quantiles or significance tests are
-reported because the sample count and design do not support them.
+so arm samples are not paired. The two-execution stability note above is
+the concrete demonstration: a pass can mark a ratio "resolved" that flips
+sign in the next pass. What the evidence supports is: the observed
+differences were not sign-stable across admitted runs, and no benefit or
+penalty for Sluice could be resolved under these conditions (warm cache,
+one synchronous thread, this host). It does not establish that the true
+difference is zero, and no p-quantiles or significance tests are reported
+because the sample count and design do not support them.
 
-Reading, honestly: on a warm cache and one synchronous thread, no
-arm's difference from another rose above run-to-run variability anywhere
-that matters, and the I/O-only replay agrees. Wrapper tax is unresolved
-at this resolution (P1 is the same `pread` primitive as `ReadableFile`'s).
-Sluice effect is unresolved — `read_at` shows no measurable synchronous
-cost relative to `pread` for this request stream (large sequential-ish
-positional reads, 57 requests for 174 MB). Nothing here licenses a claim
-that Sluice is faster or slower in production conditions; it licenses
-"no measurable synchronous overhead on this workload, on this host, warm
-cache", plus the request profiles themselves. The interesting bottlenecks
-to test next are (1) cold cache / small random reads, where per-call
-fixed costs matter, (2) the async request path (Sluice
-ThreadPool/io_uring), which is exactly what the D-arms round is for, and
-(3) buffered-stream reader settings that change the request-size
-distribution.
+Reading, honestly: the instrument that replicates is the I/O-only replay
+over the byte-identical captured request trace — `read_at` shows no
+measurable synchronous cost relative to `pread` on this request stream,
+on either host (WSL2 −0.28%, E5 −0.64% and +0.16%). At the full-workload
+level, arm differences do not replicate in sign across admitted runs, so
+nothing here licenses a workload-level performance claim in either
+direction; any future resolved claim needs an interleaved/paired design
+or a much larger sample. The interesting bottlenecks to test next are
+(1) cold cache / small random reads, where per-call fixed costs matter,
+(2) the async request path (Sluice ThreadPool/io_uring), which is
+exactly what the D-arms round is for, and (3) buffered-stream reader
+settings that change the request-size distribution.

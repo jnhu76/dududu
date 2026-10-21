@@ -1,7 +1,8 @@
 # R1 standalone Parquet: read-path provenance evidence
-# host: Linux 6.18.54.1-microsoft-standard-WSL2 2026-10-20T15:40:19Z
-# regenerated at DUDUDU_SHA=852bea06ce4589522dc1041def4d989c25de7a24 after the review fixes;
-# the io_trace serialization/parse changes never touched a byte-moving path.
+# host: Linux 7.2.9-201.fc44.x86_64 (benchmark server E5) 2026-10-21T05:33:10Z
+# regenerated at DUDUDU_SHA=ed053cb on the canonical host after the second
+# review round; the evidence-gate changes (validators, protocol script,
+# manifest fields) never touched a byte-moving path.
 
 ## 1. Object-level: which TU issues the byte-moving primitive
 
@@ -21,9 +22,9 @@ Grep counts this run: native TU pread refs=1, sluice TU pread refs=0, sluice TU 
 
 ## 2. Dynamic: strace pread64 counts per arm (t3_full, small fixture)
 # P1:
-100.00    0.004032          89        45           pread64
+100.00    0.001006          22        45           pread64
 # P2:
-100.00    0.002511          55        45           pread64
+100.00    0.000845          18        45           pread64
 # Both arms: 43 workload reads + loader noise; identical call counts, and
 # validate-trace.sh confirms the two arms' captured request lists are
 # identical record-for-record (44 lines: header + 43 requests).

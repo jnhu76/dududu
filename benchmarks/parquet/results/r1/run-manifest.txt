@@ -1,4 +1,4 @@
-DUDUDU_SHA=852bea06ce4589522dc1041def4d989c25de7a24
+DUDUDU_SHA=ed053cbe098605a40fcd6c9686d5361aa4d10b01
 SLUICE_SHA=8fdcd99c5f9a42dadfe5aa0c095bf96c756aeb01
 SLUICE_PROFILE=noliburing
 SDK_PREFIX=build/sluice-sdk/noliburing
@@ -6,10 +6,17 @@ ARROW_VERSION=23.0.1
 PARQUET_VERSION=23.0.1
 REPS=10
 WARMUP_SECONDS=2
-KERNEL=6.18.54.1-microsoft-standard-WSL2
-DATE_UTC=2026-10-20T16:52:09Z
-COMPILER=15
+KERNEL=7.2.9-201.fc44.x86_64
+DATE_UTC=2026-10-21T05:24:10Z
+COMPILER=16
+BINARY build/cmake-parquet/experiments/parquet/parquet_fixture b4750ec7209116163a3f85fbd2257312acf40916ba6fcb90f188950a81e2b1a9 138792
+BINARY build/cmake-parquet/experiments/parquet/parquet_trace 408a97b1676654476fb1ca93189cd6788458cafa7c40425ea3573825df24d33b 248568
+BINARY build/cmake-parquet/experiments/parquet/parquet_bench e24a6f5b993b95691d53f73730b3014f55f76b92299536516d4cdf9398f91d3a 280768
+LIB build/sluice-sdk/noliburing/lib/libsluice_core.a 489104b5819cdaca251471d5e0b10c20051071bca88dcb7bfc198f1336c99c5a 21072
+LIB build/sluice-sdk/noliburing/lib/libsluice_async.a 535d1401402dcc5fb6b2b76b15628c1af64a5c6d0482ab803317b7bdc2856b30 199402
 DATASET build/parquet-data/small-none.parquet c2debb4c16228e5b66c9fbfa75e543b1ecff5e3b90b075db2ef1098a5e9eb3bb 6118918
 DATASET build/parquet-data/medium-none.parquet 6116e69cf20a89b7ca8a23e4d4dbd7d3759225a68e379d4776b3727bf3c05af6 181966794
 TRACE build/parquet-results/trace-medium-t3.jsonl a059e58fbc8771d78b23cd74afc3e1e7d26a09e230165b474dfc5b5cf1b53724 58
 TRACE build/parquet-results/trace-medium-t3-p2.jsonl 4c67562626853ec75a9d48cb9626f283342db07c968bb8b7d893dd08a966950d 58
+RESULT build/parquet-results/warmup-pass.json ea8b26cea9cb5f3e80516cfd3e4ade71a3c4a5ab2ddee8926139bc7798ef79c6 238925
+RESULT build/parquet-results/measure-pass.json 460cdcaf21c9abdf0b51b7139cf702155ca55cb12d416091e6a060f1932ecfc5 238924
