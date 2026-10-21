@@ -260,6 +260,17 @@ check "refused manifest writes no partial file (build artifact)" \
     '[[ ! -f "$results_dir/run-manifest.txt" ]]'
 mv "$tmp/lib-core.bak" "$sdk_prefix/lib/libsluice_core.a"
 
+# --- pass flags derive from the selection, never from build/ leftovers ---------
+printf 'trace\n' > "$results_dir/trace-medium-t3.jsonl"
+check "small-only pass ignores an existing medium dataset" \
+    '[[ "$(bench_args small)" == "--small=$data_dir/small-none.parquet" ]]'
+check "small-only pass never replays a trace" \
+    '[[ "$(bench_args small)" != *--trace* ]]'
+check "medium pass replays the captured trace" \
+    '[[ "$(bench_args medium)" == *"--trace=$results_dir/trace-medium-t3.jsonl" ]]'
+check "both pass hands over both datasets and the trace" \
+    '[[ "$(bench_args small medium)" == *"--small"*"--medium"*"--trace"* ]]'
+
 if [[ $fails -ne 0 ]]; then
     echo "run-bench-protocol-test: $fails failure(s) over $cases checks" >&2
     exit 1

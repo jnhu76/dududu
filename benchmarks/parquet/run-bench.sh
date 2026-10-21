@@ -217,18 +217,31 @@ write_manifest() { # <selected-datasets...>
     } > "$results_dir/run-manifest.txt"
 }
 
-run_pass() { # pass-name — validated against the full roster before it counts
+# The dataset flags each pass hands to parquet_bench derive from the
+# selection, never from what happens to exist under build/: after a both-run,
+# a leftover medium dataset must not resurrect medium benchmarks into a
+# small-only pass (the admission gate would reject them, but the run itself
+# would be useless).
+bench_args() { # <selected...> -> flags, one per line
+    local name
+    for name in "$@"; do
+        case "$name" in
+            small) echo "--small=$data_dir/small-none.parquet" ;;
+            medium) echo "--medium=$data_dir/medium-none.parquet" ;;
+        esac
+    done
+    if [[ " $* " == *" medium "* && -f "$results_dir/trace-medium-t3.jsonl" ]]; then
+        echo "--trace=$results_dir/trace-medium-t3.jsonl"
+    fi
+}
+
+run_pass() { # <pass-name> <selected...> — validated against the roster before it counts
     local pass="$1"
-    local args=()
-    if [[ -f "$data_dir/small-none.parquet" ]]; then
-        args+=(--small="$data_dir/small-none.parquet")
-    fi
-    if [[ -f "$data_dir/medium-none.parquet" ]]; then
-        args+=(--medium="$data_dir/medium-none.parquet")
-    fi
-    if [[ -f "$results_dir/trace-medium-t3.jsonl" ]]; then
-        args+=(--trace="$results_dir/trace-medium-t3.jsonl")
-    fi
+    shift
+    local mode
+    if [[ "$#" -eq 1 ]]; then mode="$1"; else mode="both"; fi
+    local args=() a
+    while IFS= read -r a; do args+=("$a"); done < <(bench_args "$@")
     local json="$results_dir/$pass.json"
     local log="$results_dir/$pass.log"
     echo "== $pass -> $json"
@@ -245,8 +258,10 @@ run_pass() { # pass-name — validated against the full roster before it counts
     # SkipWithError, short sampling) aborts the protocol here and never
     # reaches the summary.
     local trace_args=()
-    [[ -f "$results_dir/trace-medium-t3.jsonl" ]] && trace_args=(--trace)
-    bash benchmarks/parquet/validate-results.sh "$json" "$selected" "$REPS" "${trace_args[@]}"
+    if [[ "$mode" != "small" && -f "$results_dir/trace-medium-t3.jsonl" ]]; then
+        trace_args=(--trace)
+    fi
+    bash benchmarks/parquet/validate-results.sh "$json" "$mode" "$REPS" "${trace_args[@]}"
     record_result "$json"
 }
 
@@ -289,9 +304,9 @@ main() {
     write_manifest "${names[@]}"
 
     # Pass 1: warm the caches (file content + reader code paths). Discarded.
-    run_pass warmup-pass
+    run_pass warmup-pass "${names[@]}"
     # Pass 2: the sampled pass. Only this JSON feeds the summary.
-    run_pass measure-pass
+    run_pass measure-pass "${names[@]}"
 
     echo "== summary"
     bash benchmarks/parquet/summarize.sh "$results_dir/measure-pass.json" \
