@@ -18,6 +18,16 @@ Produced under `build/parquet-results/` by `run-bench.sh`:
 * `summary.txt` — human summary (same text as `results/r1/summary.txt`).
 * `read-path-evidence.txt` — nm/strace provenance for the byte movers.
 
+Every pass JSON is admitted by `benchmarks/parquet/validate-results.sh`
+before it counts: the entry multiset must close over the exact roster (the
+required benchmarks × the required samples, plus exactly one
+mean/median/stddev/cv aggregate each — and nothing else, so ghost
+aggregates, duplicate entries and mislabeled `aggregate_name` values fail),
+iteration entries carry dense repetition indices with positive times,
+aggregate mean/median times are positive and stddev/cv non-negative (an
+all-equal sample set is zero-variance, not broken), and no entry anywhere
+reports `error_occurred`.
+
 ## Committed evidence (this directory, `results/r1/`)
 
 Repository policy (AGENTS rule 6) keeps benchmark JSON and perf traces out
@@ -27,8 +37,12 @@ identity records needed to regenerate and re-verify the rest:
 * `summary.txt` — sampled-pass table + attribution ratios (identical copy
   of `build/parquet-results/summary.txt`).
 * `run-manifest.txt` — provenance for the sampled pass: `DUDUDU_SHA`,
-  `SLUICE_SHA`, profile, SDK prefix, toolchain, repetitions, kernel, and
-  the SHA-256 + byte size of both datasets.
+  `SLUICE_SHA`, profile, SDK prefix, toolchain, repetitions, kernel, the
+  SHA-256 + byte size of the three protocol binaries and the staged Sluice
+  libraries (`BINARY`/`LIB` lines), and of both datasets (`DATASET` lines).
+  Each admitted pass appends its raw JSON's digest (`RESULT` lines), so the
+  exact files the summary was computed from stay auditable even though rule
+  6 keeps the JSONs themselves out of Git.
 * `read-path-evidence.txt` — object-level (which TU issues `pread` vs which
   references `sluice::blocking::read_at`), dynamic strace counts, and the
   fault-injection pointer to the oracle test.
