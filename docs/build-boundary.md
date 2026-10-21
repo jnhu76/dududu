@@ -54,7 +54,9 @@ The `release` and `sluice-only` presets configure two CMake trees that share one
 `DUDUDU_BUILD_ROOT`. They must be driven **serially**: both would run `xmake`
 in the same work directories and both would drive the same DuckDB build tree,
 and neither build system holds a lock against the other. Give a second tree its
-own `-DDUDUDU_BUILD_ROOT` if two builds must run in parallel.
+own `-DDUDUDU_BUILD_ROOT` if two builds must run in parallel. The `parquet`
+preset (R1 standalone, DuckDB off) shares the same SDK work dirs and prefix, so
+it joins the same serial rule; it never touches the DuckDB build tree.
 
 ## Why each isolation rule exists
 

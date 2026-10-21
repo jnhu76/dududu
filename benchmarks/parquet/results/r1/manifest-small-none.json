@@ -1,0 +1,10 @@
+{
+  "dataset": "small",
+  "compression": "none",
+  "path": "build/parquet-data/small-none.parquet",
+  "bytes": 6118918,
+  "sha256": "c2debb4c16228e5b66c9fbfa75e543b1ecff5e3b90b075db2ef1098a5e9eb3bb",
+  "seed": "0xD4D4D420261020",
+  "arrow_version": "23.0.1",
+  "generator": "parquet_fixture"
+}

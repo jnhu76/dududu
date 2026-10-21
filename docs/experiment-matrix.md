@@ -17,6 +17,32 @@ D0' is not a sixth experiment. It is the control that makes D3/D4 attributable:
 a host-protocol change is measured with the native filesystem under the identical
 patch, so a D3/D4 delta cannot be credited to Sluice when it is really the patch.
 
+## Standalone Parquet arms (R1)
+
+Before pointing the D1/D2 machinery at DuckDB, the same three-shape
+comparison runs against a second real workload: the Apache Parquet C++
+reader. DuckDB is not built, modified or run for these arms.
+
+| ID | Name | I/O implementation | Role |
+|---|---|---|---|
+| P0 | Arrow Native | `arrow::io::ReadableFile` | native baseline |
+| P1 | Native Wrapper | custom `RandomAccessFile` + POSIX `pread` | adapter-cost control |
+| P2 | Sluice Direct | same adapter + `sluice::blocking::read_at` | experiment arm |
+
+P1 and P2 are one adapter (`experiments/parquet/src/adapter_file.cpp`) over
+two interchangeable backends; each backend TU contains exactly one
+byte-moving primitive, and fault injection at the backend boundary proves
+the reader actually traverses it. The P-arms answer, with a second
+workload, the same questions D1/D2 ask of DuckDB: what does the reader
+request, what does a wrapper cost, what does Sluice's synchronous path
+change. Protocol and admission: `benchmarks/parquet/protocol.md`.
+
+| ID | Status | Evidence |
+|---|---|---|
+| P0 | **PASS (R1 scope)** | oracle-equal decode, all workloads; request profile via trace/strace |
+| P1 | **PASS (R1 scope)** | contract + oracle + fault-injection evidence; wrapper tax measured |
+| P2 | **PASS (R1 scope, warm-cache synchronous)** | contract + oracle + fault-injection evidence; sluice effect measured; replay cross-check |
+
 ## Current status
 
 | ID | Status | Evidence |
@@ -29,6 +55,9 @@ patch, so a D3/D4 delta cannot be credited to Sluice when it is really the patch
 | D0' | design only | `docs/duckdb-stable-io-map.md` §2.5 |
 
 "No result" is the correct state for D1–D4. Nothing in R0 measures them.
+The P-arms above are the R1 standalone round; their numbers are bound to
+their protocol (`benchmarks/parquet/protocol.md`) and do not transfer to
+DuckDB or to conditions outside it (cold cache, async, other hosts).
 
 ## Admission rules
 

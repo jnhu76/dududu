@@ -1,0 +1,34 @@
+# R1 standalone Parquet: read-path provenance evidence
+# host: Linux 7.2.9-201.fc44.x86_64 (benchmark server E5) 2026-10-21T05:33:10Z
+# regenerated at DUDUDU_SHA=ed053cb on the canonical host after the second
+# review round; the evidence-gate changes (validators, protocol script,
+# manifest fields) never touched a byte-moving path.
+
+## 1. Object-level: which TU issues the byte-moving primitive
+
+### backend_native.cpp.o (P1 backend TU)
+                 U pread
+
+### backend_sluice.cpp.o (P2 backend TU) — no pread/read anywhere:
+(no pread/read undefined symbols; the only byte-moving references are)
+                 U sluice::blocking::read_at(sluice::File const&, unsigned long, std::span<std::byte, ...>)
+                 U sluice::blocking::size(sluice::File const&)
+                 U sluice::blocking::file_info(sluice::File const&)
+
+### Sluice's own blocking_file.cpp.o (inside libsluice_core.a) issues pread:
+                 U pread
+
+Grep counts this run: native TU pread refs=1, sluice TU pread refs=0, sluice TU read_at refs=3.
+
+## 2. Dynamic: strace pread64 counts per arm (t3_full, small fixture)
+# P1:
+100.00    0.001006          22        45           pread64
+# P2:
+100.00    0.000845          18        45           pread64
+# Both arms: 43 workload reads + loader noise; identical call counts, and
+# validate-trace.sh confirms the two arms' captured request lists are
+# identical record-for-record (44 lines: header + 43 requests).
+
+## 3. Behavioral: fault injection at the arm boundary stops the reader
+# parquet.oracle: P1 mid-read refusal, P2 mid-read refusal, P2 fail-every-read,
+# fake-zero backend rejection — see test log (ctest -R parquet.oracle -V).

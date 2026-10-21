@@ -26,6 +26,16 @@
       "cacheVariables": {
         "DUDUDU_BUILD_DUCKDB_NATIVE": "OFF"
       }
+    },
+    {
+      "name": "parquet",
+      "displayName": "Standalone Parquet x Sluice experiment (no DuckDB build)",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/cmake-parquet",
+      "cacheVariables": {
+        "DUDUDU_BUILD_DUCKDB_NATIVE": "OFF",
+        "DUDUDU_ENABLE_PARQUET": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -36,6 +46,10 @@
     {
       "name": "sluice-only",
       "configurePreset": "sluice-only"
+    },
+    {
+      "name": "parquet",
+      "configurePreset": "parquet"
     }
   ],
   "testPresets": [
@@ -49,6 +63,13 @@
     {
       "name": "sluice-only",
       "configurePreset": "sluice-only",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "parquet",
+      "configurePreset": "parquet",
       "output": {
         "outputOnFailure": true
       }
