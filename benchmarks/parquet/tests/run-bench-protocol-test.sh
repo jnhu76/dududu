@@ -4,10 +4,11 @@
 # run-bench.sh is sourceable (its executable flow sits behind a source
 # guard), so this test drives its REAL ensure_fixture/write_manifest with a
 # stubbed generator tool and scratch directories — no benchmark runs, no
-# real datasets. The cases pin the two invariants an earlier version broke:
-#   * a dataset is admitted by identity (sidecar sha match), never by file
-#     existence — a corrupted or record-less dataset must regenerate, and a
-#     generator whose output fails its own record must fail the protocol;
+# real datasets. The cases pin the invariants an earlier version broke:
+#   * fixture identity binds to the FROZEN r1 record committed to the repo,
+#     never to the sidecar the generator writes next to the dataset — a
+#     dataset that drifts together with its sidecar must regenerate, and a
+#     generator whose output misses the frozen record fails the protocol;
 #   * the manifest is written only after every selected dataset exists, so
 #     an empty build can never produce a manifest without its DATASET lines.
 set -u
@@ -26,8 +27,9 @@ source "$repo/benchmarks/parquet/run-bench.sh"
 # Redirect the protocol onto scratch state.
 data_dir="$tmp/data"
 results_dir="$tmp/results"
+frozen_dir="$tmp/frozen"
 fixture="$tmp/stub-fixture"
-mkdir -p "$data_dir" "$results_dir"
+mkdir -p "$data_dir" "$results_dir" "$frozen_dir"
 
 fails=0
 cases=0
@@ -60,11 +62,7 @@ done
 payload="canonical-$dataset-payload-v1"
 file="$out/$dataset-$codec.parquet"
 printf '%s' "$payload" > "$file"
-if [[ "${STUB_BADSHA:-0}" == 1 ]]; then
-    sha="deadbeef"
-else
-    sha=$(sha256sum "$file" | awk '{print $1}')
-fi
+sha=$(sha256sum "$file" | awk '{print $1}')
 printf '{"sha256":"%s"}\n' "$sha" > "$out/manifest-$dataset-$codec.json"
 STUB
 chmod +x "$fixture"
@@ -75,6 +73,16 @@ invocations() {
 canonical() { # <name>
     printf 'canonical-%s-payload-v1' "$1"
 }
+freeze() { # <name> — the frozen r1 record for the stub's canonical payload
+    local name="$1" payload
+    payload=$(canonical "$name")
+    printf '{"dataset":"%s","compression":"none","bytes":%d,"sha256":"%s"}\n' \
+        "$name" "${#payload}" \
+        "$(printf '%s' "$payload" | sha256sum | awk '{print $1}')" \
+        > "$frozen_dir/manifest-$name-none.json"
+}
+freeze small
+freeze medium
 
 # --- identity admission ------------------------------------------------------
 if ensure_fixture small; then
@@ -100,15 +108,38 @@ else
     check "ensure_fixture succeeds over a corrupted dataset" 'false'
 fi
 
+# A dataset that drifts together with its sidecar stays self-consistent; the
+# frozen record is what exposes it. A sidecar-trusting implementation passes
+# exactly this shape.
+printf 'drifted' >> "$data_dir/small-none.parquet"
+drift_sha=$(sha256sum "$data_dir/small-none.parquet" | awk '{print $1}')
+printf '{"sha256":"%s"}\n' "$drift_sha" > "$data_dir/manifest-small-none.json"
+if ensure_fixture small; then
+    check "sidecar-consistent drift is regenerated" \
+        '[[ "$(cat "$data_dir/small-none.parquet")" == "$(canonical small)" ]]'
+    check "drift triggered exactly one regeneration" '[[ "$(invocations)" == 3 ]]'
+else
+    check "ensure_fixture succeeds over sidecar-consistent drift" 'false'
+fi
+
+# With the frozen record as the authority, a missing sidecar no longer forces
+# regeneration: bytes matching the frozen record are the frozen dataset.
 rm "$data_dir/manifest-small-none.json"
 if ensure_fixture small; then
-    check "missing identity record forces regeneration" \
-        '[[ "$(cat "$data_dir/small-none.parquet")" == "$(canonical small)" && "$(invocations)" == 3 ]]'
+    check "frozen-matching dataset reuses without its sidecar" '[[ "$(invocations)" == 3 ]]'
 else
     check "ensure_fixture succeeds over a record-less dataset" 'false'
 fi
 
-# --- generator failures propagate --------------------------------------------
+# --- frozen-record and generator failures propagate ----------------------------
+mv "$frozen_dir/manifest-medium-none.json" "$tmp/frozen-medium.bak"
+if ensure_fixture medium 2>/dev/null; then
+    check "missing frozen record fails the protocol" 'false'
+else
+    check "missing frozen record fails the protocol" 'true'
+fi
+mv "$tmp/frozen-medium.bak" "$frozen_dir/manifest-medium-none.json"
+
 export STUB_FAIL=1
 if ensure_fixture medium 2>/dev/null; then
     check "generator failure fails the protocol" 'false'
@@ -117,13 +148,17 @@ else
 fi
 export STUB_FAIL=0
 
-export STUB_BADSHA=1
+# The generator produced bytes, but they are not the frozen dataset: a hard
+# failure, never a silent substitution of the measured data.
+printf '{"dataset":"medium","compression":"none","bytes":24,"sha256":"%s"}\n' \
+    "$(printf 'not-the-canonical-medium' | sha256sum | awk '{print $1}')" \
+    > "$frozen_dir/manifest-medium-none.json"
 if ensure_fixture medium 2>/dev/null; then
-    check "output that fails its own record is rejected" 'false'
+    check "generator output missing the frozen record is rejected" 'false'
 else
-    check "output that fails its own record is rejected" 'true'
+    check "generator output missing the frozen record is rejected" 'true'
 fi
-export STUB_BADSHA=0
+freeze medium
 
 # Re-add a proper medium fixture for the manifest cases.
 rm -f "$data_dir"/medium-none.parquet "$data_dir"/manifest-medium-none.json

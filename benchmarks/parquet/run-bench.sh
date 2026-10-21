@@ -35,38 +35,56 @@ cd "$repo"
 build_dir=build/cmake-parquet
 data_dir=build/parquet-data
 results_dir=build/parquet-results
+frozen_dir=benchmarks/parquet/results/r1
 fixture="$build_dir/experiments/parquet/parquet_fixture"
 tracer="$build_dir/experiments/parquet/parquet_trace"
 bench="$build_dir/experiments/parquet/parquet_bench"
 
-# Fixture identity: a dataset is usable only if its bytes still hash to the
-# digest the generator recorded in the sidecar manifest. Anything else
-# (missing, truncated, mutated, sidecar gone) regenerates once, and a
-# regenerated dataset that still fails its own record is a hard error.
+# Fixture identity binds to the frozen r1 record committed under
+# benchmarks/parquet/results/r1/ — never to the sidecar sitting next to the
+# dataset. Dataset and sidecar both live under mutable build/, so a dataset
+# whose bytes drifted together with its sidecar would pass a self-referential
+# check while no longer being the data R1's evidence was generated from.
+# Digest, byte size and the frozen record's own labels must all match;
+# anything else regenerates once, and a regenerated dataset that still misses
+# the frozen record is a hard error (generator or toolchain drift — R1's
+# fixtures are pinned to the Arrow version the record names).
 ensure_fixture() { # <name>
     local name="$1"
     local file="$data_dir/$name-none.parquet"
-    local sidecar="$data_dir/manifest-$name-none.json"
+    local frozen="$frozen_dir/manifest-$name-none.json"
+    local want have want_bytes
+    if [[ ! -f "$frozen" ]]; then
+        echo "run-bench: no frozen identity record for $name: $frozen" >&2
+        return 1
+    fi
+    if [[ "$(jq -r '.dataset // empty' "$frozen")" != "$name" \
+        || "$(jq -r '.compression // empty' "$frozen")" != "none" ]]; then
+        echo "run-bench: frozen record $frozen is not for dataset $name/none" >&2
+        return 1
+    fi
+    want=$(jq -r '.sha256 // empty' "$frozen")
+    want_bytes=$(jq -r '.bytes // empty' "$frozen")
+    if [[ -z "$want" || -z "$want_bytes" ]]; then
+        echo "run-bench: frozen record $frozen lacks sha256/bytes" >&2
+        return 1
+    fi
     local verified=0
-    if [[ -f "$file" && -f "$sidecar" ]]; then
-        local want have
-        want=$(jq -r '.sha256 // empty' "$sidecar" 2>/dev/null || true)
+    if [[ -f "$file" ]]; then
         have=$(sha256sum "$file" | awk '{print $1}')
-        if [[ -n "$want" && "$want" == "$have" ]]; then
+        if [[ "$have" == "$want" && "$(stat -c%s "$file")" == "$want_bytes" ]]; then
             verified=1
         else
-            echo "== $name fixture fails its identity record (want=$want have=$have); regenerating"
+            echo "== $name fixture deviates from the frozen r1 record (frozen=$want have=$have); regenerating"
         fi
     fi
     if [[ "$verified" -eq 0 ]]; then
         echo "== generating $name fixture (not timed)"
         "$fixture" --out "$data_dir" --dataset "$name" --compression none \
             || { echo "run-bench: fixture generation failed: $name" >&2; return 1; }
-        local want2 have2
-        want2=$(jq -r '.sha256 // empty' "$sidecar" 2>/dev/null || true)
-        have2=$(sha256sum "$file" | awk '{print $1}')
-        if [[ -z "$want2" || "$want2" != "$have2" ]]; then
-            echo "run-bench: regenerated $name fixture still fails its identity record" >&2
+        have=$(sha256sum "$file" | awk '{print $1}')
+        if [[ "$have" != "$want" || "$(stat -c%s "$file")" != "$want_bytes" ]]; then
+            echo "run-bench: regenerated $name fixture misses the frozen r1 record (frozen=$want have=$have)" >&2
             return 1
         fi
     fi
