@@ -16,6 +16,9 @@ scanning `lineitem.parquet` (mission Phase 6.2, Sluice #578 R1 input).
   wall-clock probes and the five gate criteria →
   `NO_MATERIAL_OPPORTUNITY`; the formal A/B was not run, by the gate's own
   rule.
+- `SLUICE_AC_RECOMMENDATIONS.md` — what this workload does and does not
+  recommend for Sluice AC-1/2/3 and the True Async host change, plus the
+  admission conditions for any next-stage product or Host API work.
 - `results/trace-index.md` — provenance of the R0 strace inputs (paths,
   SHA-256, capture commands). Derived CSV/JSON outputs are regenerable and
   kept out of Git per dududu rule 6.
