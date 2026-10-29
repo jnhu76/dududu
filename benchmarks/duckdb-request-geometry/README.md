@@ -11,6 +11,11 @@ scanning `lineitem.parquet` (mission Phase 6.2, Sluice #578 R1 input).
   dependency tiers, and the one legal coalescing window (per-row-group
   projected-chunk span; measured 492 → 50 preads with the in-tree
   `prefetch_all_parquet_files` mechanism).
+- `DUCKDB_METADATA_OPPORTUNITY_GATE.md` — the Phase 6.3/6.4 verdict: executed
+  cost model, mechanism screening M0–M5, correctness oracle, bounded
+  wall-clock probes and the five gate criteria →
+  `NO_MATERIAL_OPPORTUNITY`; the formal A/B was not run, by the gate's own
+  rule.
 - `results/trace-index.md` — provenance of the R0 strace inputs (paths,
   SHA-256, capture commands). Derived CSV/JSON outputs are regenerable and
   kept out of Git per dududu rule 6.
