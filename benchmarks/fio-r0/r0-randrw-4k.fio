@@ -1,0 +1,24 @@
+; fio R0 native storage baseline — mixed read/write shape (75/25).
+; This job WRITES: it mutates the dataset file. Re-run the README.md prep
+; (or re-hash) afterwards; a post-randrw hash no longer matches the recorded
+; dataset identity.
+; Distinct load from the read-only files: rw mix and write pressure are
+; identity dimensions.
+
+[global]
+rw=randrw
+rwmixread=75
+bs=4k
+iodepth=1
+direct=1
+size=8G
+filename=r0-randrw-8g.bin
+runtime=30
+ramp_time=5
+time_based=1
+group_reporting=1
+numjobs=1
+randseed=20261029
+
+[r0-randrw-4k-r75-direct]
+ioengine=psync

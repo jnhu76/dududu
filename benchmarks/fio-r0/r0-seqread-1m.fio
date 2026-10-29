@@ -1,0 +1,20 @@
+; fio R0 native storage baseline — sequential streaming shape.
+; Distinct load from the 4k random file (see r0-read-4k.fio): block size and
+; access pattern are identity dimensions, never merged or compared.
+; The dataset file must already exist (see README.md prep).
+
+[global]
+rw=read
+bs=1M
+iodepth=1
+direct=1
+size=8G
+filename=r0-seq-1m.bin
+runtime=30
+ramp_time=5
+time_based=1
+group_reporting=1
+numjobs=1
+
+[r0-seqread-1m-direct]
+ioengine=psync

@@ -1,0 +1,40 @@
+; fio R0 native storage baseline — E5 host (Intel Xeon E5-2666 v3, Fedora 44,
+; kernel 7.2.11, btrfs /home compress=zstd:1 ssd, /tmp tmpfs).
+;
+; Each [section] is a DISTINCT load. ioengine (psync vs libaio vs io_uring),
+; iodepth and direct are load-identity dimensions: a number from one section is
+; never comparable to, or substitutable for, a number from another. One section
+; runs alone at a time, on an otherwise idle host (serial measurement lane).
+;
+; The dataset file must already exist (see README.md prep): fio reads it, it is
+; not created here, so content and byte size are pinned outside this file.
+; `filename` resolves against the --directory passed on the command line.
+
+[global]
+rw=randread
+bs=4k
+iodepth=1
+direct=1
+size=8G
+filename=r0-rand-8g.bin
+runtime=30
+ramp_time=5
+time_based=1
+group_reporting=1
+numjobs=1
+randseed=20261029
+
+[r0-sync-4k-direct]
+ioengine=psync
+
+[r0-sync-4k-buffered]
+ioengine=psync
+direct=0
+
+[r0-libaio-4k-qd32-direct]
+ioengine=libaio
+iodepth=32
+
+[r0-io_uring-4k-qd32-direct]
+ioengine=io_uring
+iodepth=32
